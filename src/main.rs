@@ -159,38 +159,46 @@ fn main() -> ! {
     neopixel.write([RGB {r:0, g:20, b:20}].into_iter()).unwrap();
 
     let mut write_buf = [0u8; FLASH_BLOCK_SIZE];
-    let mut buffer_idx = 0usize;
+    // 1 byte header
+    write_buf[0] = 1; // this just inidicates this block has data
+    let mut buffer_idx = 1usize;  
+    let mut fifo_size = 0usize;
+    let mut page_address = 0u32;
     mpu6050::mpu6050_reset_fifo(&mut i2c, MPU6050_ADDR);
-   {
-        while mpu6050::mpu6050_get_fifo_count(&mut i2c, MPU6050_ADDR) < 28 {
-            delay.delay_ms(1u8);
+    loop {
+
+        if (buffer_idx + fifo_size) > FLASH_BLOCK_SIZE {
+            // Need to write out the buffer to flash
+            neopixel.write([RGB {r:20, g:20, b:0}].into_iter()).unwrap();
+            write_to_uart(&mut board_uart_tx, b"Writing to flash\r\n");
+
+            flash_wait_ready(&mut flash);
+            flash.run_command(qspi::Command::WriteEnable).unwrap();
+            flash.write_memory(page_address, &write_buf);
+            page_address += FLASH_BLOCK_SIZE as u32;
+
+            // reset the buffer 
+            for elem in write_buf.iter_mut() { *elem = 0; }
+            write_buf[0] = 1;
+            buffer_idx = 1usize;
+
+            neopixel.write([RGB {r:0, g:20, b:0}].into_iter()).unwrap();
         }
 
-        let data = mpu6050::mpu6050_read_fifo(&mut i2c, MPU6050_ADDR);
-        buffer_idx += data.to_byte_array(&mut write_buf, buffer_idx);
-
-    
-
-    flash_wait_ready(&mut flash);
-    flash.run_command(qspi::Command::WriteEnable).unwrap();
-    flash.write_memory(0, &write_buf);
-
-    let mut read_buf = [0u8; FLASH_BLOCK_SIZE];
-    flash_wait_ready(&mut flash);
-    flash.read_memory(0, &mut read_buf);
-    scratch_string.clear();
-    core::write!(&mut scratch_string, "post-write read value: {:?}\r\n", &read_buf[0..30]).unwrap();
-    write_to_uart(&mut board_uart_tx, scratch_string.as_bytes());
-
+        if mpu6050::mpu6050_get_fifo_count(&mut i2c, MPU6050_ADDR) >= 28 {
+            let data = mpu6050::mpu6050_read_fifo(&mut i2c, MPU6050_ADDR);
+            fifo_size = data.to_byte_array(&mut write_buf, buffer_idx);
+            buffer_idx += fifo_size;
+        } 
    }
 
 
-    let mut i = 0usize;
-    loop {
-        neopixel.write([hsv2rgb(Hsv { hue: (i % 256) as u8, sat: 255, val: 30 })].into_iter()).unwrap();
-        i +=1;
-        delay.delay_ms(10u8);
-    } 
+    // let mut i = 0usize;
+    // loop {
+    //     neopixel.write([hsv2rgb(Hsv { hue: (i % 256) as u8, sat: 255, val: 30 })].into_iter()).unwrap();
+    //     i +=1;
+    //     delay.delay_ms(10u8);
+    // } 
 //     mpu6050::mpu6050_reset_fifo(&mut i2c, MPU6050_ADDR);
 //     let mut j = 0;
 //     loop {
