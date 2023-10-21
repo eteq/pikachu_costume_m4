@@ -3,10 +3,37 @@ name = "pikachu_costume_m4"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+# for cargo flash
+[package.metadata]
+chip = "ATSAMD51J19A"
+
+[dependencies.cortex-m-rt]
+version = "0.7"
+optional = true
+
+[dependencies.atsamd-hal]
+version = "0.16.0"
+default-features = false
 
 [dependencies]
 feather_m4 = { git = "https://github.com/atsamd-rs/atsamd" }
 panic-halt = "0.2"
+panic-persist = "0.3"
 smart-leds = "0.3"
 ws2812-timer-delay = "0.3"
+heapless = "0.7.16"
+
+[features]
+# ask the HAL to enable atsamd51j support
+default = ["cortex-m-rt", 
+            "atsamd-hal/samd51j-rt", 
+            "atsamd-hal/samd51j", 
+            "atsamd-hal/samd51", 
+            "atsamd-hal/dma", 
+            "atsamd-hal/unproven"]
+
+
+[profile.release]
+debug = true
+lto = true
+opt-level = "s"

@@ -2,6 +2,8 @@
    which appears to be adapted from https://github.com/jrowberg/i2cdevlib/blob/master/RP2040/MPU6050/MPU6050_6Axis_MotionApps_V6_12.h (also MIT License)
 */
 
+#![allow(dead_code)]
+
 pub(crate) const MPU6050_DMP_MEMORY_BANK_SIZE: usize = 256;
 pub(crate) const MPU6050_DMP_MEMORY_CHUNK_SIZE: usize = 16;
 
