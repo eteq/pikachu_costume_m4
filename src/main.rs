@@ -31,7 +31,7 @@ use core::fmt::Write;
 use heapless;
 
 use smart_leds::{
-    hsv::{hsv2rgb, Hsv},
+    //hsv::{hsv2rgb, Hsv},
     SmartLedsWrite,
     RGB,
 };
@@ -50,9 +50,25 @@ fn main() -> ! {
         &mut peripherals.OSCCTRL,
         &mut peripherals.NVMCTRL,
     );
-    let pins = bsp::Pins::new(peripherals.PORT);
+    
+    // cannot use the bsp pins because they don't expose the qspi...
+    //let pins = bsp::Pins::new(peripherals.PORT);
+    let pins = hal::gpio::Pins::new(peripherals.PORT);
+    let pd13 = pins.pa23;
+    let puart_rx = pins.pb17;
+    let puart_tx = pins.pb16;
+    let pneopixel = pins.pb03;
+    let pscl = pins.pa13;
+    let psda = pins.pa12;
+    let pqspi_sck = pins.pb10;
+    let pqspi_cs = pins.pb11;
+    let pqspi_io0 = pins.pa08;
+    let pqspi_io1 = pins.pa09;
+    let pqspi_io2 = pins.pa10;
+    let pqspi_io3 = pins.pa11;
+
     let mut delay = Delay::new(core.SYST, &mut clocks);
-    let mut red_led = pins.d13.into_push_pull_output();
+    let mut red_led = pd13.into_push_pull_output();
     red_led.set_low().unwrap();
 
 
@@ -64,8 +80,10 @@ fn main() -> ! {
         115200.Hz(),
         uart_sercom,
         &mut peripherals.MCLK,
-        pin_alias!(pins.uart_rx),
-        pin_alias!(pins.uart_tx),
+        puart_rx,
+        puart_tx
+        //pin_alias!(pins.uart_rx),
+        //pin_alias!(pins.uart_tx),
     );
     let (mut _board_uart_rx, mut board_uart_tx) = board_uart.split();
     let mut scratch_string: heapless::String<256> = heapless::String::new();
@@ -86,11 +104,11 @@ fn main() -> ! {
     timer.start(Hertz::MHz(3).into_duration());
 
     // set up neopixel
-    let neopixel_pin = pins.neopixel.into_push_pull_output();
+    let neopixel_pin = pneopixel.into_push_pull_output();
     let mut neopixel = Ws2812::new(timer, neopixel_pin);
 
     // set up MPU6050
-    let (sda, scl) = (pins.sda, pins.scl);
+    let (sda, scl) = (psda, pscl);
     let sercom2_clock = &clocks.sercom2_core(&gclk0).unwrap();
     let i2c_pads = i2c::Pads::new(sda, scl);
     let i2c_sercom = periph_alias!(peripherals.i2c_sercom);
@@ -104,8 +122,39 @@ fn main() -> ! {
 
     neopixel.write([RGB {r:20, g:20, b:0}].into_iter()).unwrap();
     
-    neopixel.write([RGB {r:0, g:20, b:0}].into_iter()).unwrap();
+    // setup flash
+    // https://github.com/atsamd-rs/atsamd/blob/master/hal/src/thumbv7em/qspi.rs and  https://github.com/atsamd-rs/atsamd/blob/master/boards/wio_terminal/examples/qspi.rs are useful here
+    // as perhaps is https://cdn-shop.adafruit.com/product-files/4763/4763_GD25Q16CTIGR.pdf
+    let mut flash = qspi::Qspi::new(
+        &mut peripherals.MCLK,
+        peripherals.QSPI,
+        pqspi_sck,
+        pqspi_cs,
+        pqspi_io0,
+        pqspi_io1,
+        pqspi_io2,
+        pqspi_io3,
+    );
 
+    flash_wait_ready(&mut flash);
+    flash.run_command(qspi::Command::EnableReset).unwrap();
+    flash.run_command(qspi::Command::Reset).unwrap();
+    delay.delay_ms(15u8);
+
+    // 60 MHz I think? 120/(3-1)
+    flash.set_clk_divider(3);
+
+    // enable QSPI
+    flash.write_command(qspi::Command::WriteStatus, &[0x00, 0x02]).unwrap();
+    let mut read_buf = [0u8; 4];
+    flash.read_memory(0, &mut read_buf);
+    scratch_string.clear();
+    core::write!(&mut scratch_string, "first 4 byes: {},{},{},{}\r\n", read_buf[0], read_buf[1], read_buf[2], read_buf[3]).unwrap();
+    write_to_uart(&mut board_uart_tx, scratch_string.as_bytes());
+
+
+    neopixel.write([RGB {r:0, g:20, b:0}].into_iter()).unwrap();
+    loop {}
     loop {
         let result = mpu6050::mpu6050_read_latest(&mut i2c, 0x68);
         scratch_string.clear();
@@ -121,20 +170,19 @@ fn main() -> ! {
 
         delay.delay_ms(500u16);
     }
+}
 
-    // Loop through all of the available hue values (colors) to make a
-    // rainbow effect from the onboard neopixel
-    // loop {
-    //     for j in 0..255u8 {
-    //         let colors = [hsv2rgb(Hsv {
-    //             hue: j,
-    //             sat: 255,
-    //             val: 2,
-    //         })];
-    //         neopixel.write(colors.iter().cloned()).unwrap();
-    //         delay.delay_ms(5u8);
-    //     }
-    // }
+
+fn flash_wait_ready(flash: &mut qspi::Qspi<qspi::OneShot>) {
+    let mut out1 = [0u8; 1];
+    let mut out2 = [0u8; 1];
+
+    flash.read_command(qspi::Command::ReadStatus, &mut out1);
+    flash.read_command(qspi::Command::ReadStatus2, &mut out2);
+    while (out1[0] & 1u8) == 1 || (out1[0] & 0b10000000u8) == 1  {
+        flash.read_command(qspi::Command::ReadStatus, &mut out1);
+        flash.read_command(qspi::Command::ReadStatus2, &mut out2);
+    }
 }
 
 fn write_to_uart<T: uart::ValidConfig>(tx: &mut uart::Uart<T, uart::TxDuplex>, 
