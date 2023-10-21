@@ -31,12 +31,14 @@ use core::fmt::Write;
 use heapless;
 
 use smart_leds::{
-    //hsv::{hsv2rgb, Hsv},
+    hsv::{hsv2rgb, Hsv},
     SmartLedsWrite,
     RGB,
 };
 use ws2812_timer_delay::Ws2812;
 
+const MPU6050_ADDR: u8 = 0x68;
+const FLASH_BLOCK_SIZE: usize = 256;  // bytes
 
 
 #[entry]
@@ -69,8 +71,22 @@ fn main() -> ! {
 
     let mut delay = Delay::new(core.SYST, &mut clocks);
     let mut red_led = pd13.into_push_pull_output();
-    red_led.set_low().unwrap();
+    red_led.set_high().unwrap();
 
+    // set up timer for neopixel
+    let gclk0 = clocks.gclk0();
+    let timer_clock = clocks.tc2_tc3(&gclk0).unwrap();
+    let mut timer = TimerCounter::tc3_(&timer_clock, peripherals.TC3, &mut peripherals.MCLK);
+    timer.start(Hertz::MHz(3).into_duration());
+
+    // set up neopixel
+    let neopixel_pin = pneopixel.into_push_pull_output();
+    let mut neopixel = Ws2812::new(timer, neopixel_pin);
+
+    // Neopixel starts blue for setup
+    neopixel.write([RGB {r:0, g:0, b:20}].into_iter()).unwrap();
+
+    red_led.set_low().unwrap();
 
     // Setup UART peripheral
     let uart_sercom = periph_alias!(peripherals.uart_sercom);
@@ -96,17 +112,6 @@ fn main() -> ! {
         loop { }
     }
 
-
-    // set up timer for neopixel
-    let gclk0 = clocks.gclk0();
-    let timer_clock = clocks.tc2_tc3(&gclk0).unwrap();
-    let mut timer = TimerCounter::tc3_(&timer_clock, peripherals.TC3, &mut peripherals.MCLK);
-    timer.start(Hertz::MHz(3).into_duration());
-
-    // set up neopixel
-    let neopixel_pin = pneopixel.into_push_pull_output();
-    let mut neopixel = Ws2812::new(timer, neopixel_pin);
-
     // set up MPU6050
     let (sda, scl) = (psda, pscl);
     let sercom2_clock = &clocks.sercom2_core(&gclk0).unwrap();
@@ -116,11 +121,7 @@ fn main() -> ! {
         .baud(100.kHz())
         .enable();
 
-    neopixel.write([RGB {r:0, g:0, b:20}].into_iter()).unwrap();
-
-    mpu6050::mpu6050_setup(&mut i2c, &mut delay, 0x68);
-
-    neopixel.write([RGB {r:20, g:20, b:0}].into_iter()).unwrap();
+    mpu6050::mpu6050_setup(&mut i2c, &mut delay, MPU6050_ADDR);
     
     // setup flash
     // https://github.com/atsamd-rs/atsamd/blob/master/hal/src/thumbv7em/qspi.rs and  https://github.com/atsamd-rs/atsamd/blob/master/boards/wio_terminal/examples/qspi.rs are useful here
@@ -146,30 +147,109 @@ fn main() -> ! {
 
     // enable QSPI
     flash.write_command(qspi::Command::WriteStatus, &[0x00, 0x02]).unwrap();
-    let mut read_buf = [0u8; 4];
+
+    flash_wait_ready(&mut flash);
+    flash.run_command(qspi::Command::WriteEnable).unwrap();
+    write_to_uart(&mut board_uart_tx, b"erasing chip, please wait... ");
+    flash.erase_command(qspi::Command::EraseChip, 0x0).unwrap();
+    flash_wait_ready(&mut flash);
+    write_to_uart(&mut board_uart_tx, b"Done erasing!\r\n");
+
+    // Neopixel turns magenta after setup
+    neopixel.write([RGB {r:0, g:20, b:20}].into_iter()).unwrap();
+
+    let mut write_buf = [0u8; FLASH_BLOCK_SIZE];
+    let mut buffer_idx = 0usize;
+    mpu6050::mpu6050_reset_fifo(&mut i2c, MPU6050_ADDR);
+   {
+        while mpu6050::mpu6050_get_fifo_count(&mut i2c, MPU6050_ADDR) < 28 {
+            delay.delay_ms(1u8);
+        }
+
+        let data = mpu6050::mpu6050_read_fifo(&mut i2c, MPU6050_ADDR);
+        buffer_idx += data.to_byte_array(&mut write_buf, buffer_idx);
+
+    
+
+    flash_wait_ready(&mut flash);
+    flash.run_command(qspi::Command::WriteEnable).unwrap();
+    flash.write_memory(0, &write_buf);
+
+    let mut read_buf = [0u8; FLASH_BLOCK_SIZE];
+    flash_wait_ready(&mut flash);
     flash.read_memory(0, &mut read_buf);
     scratch_string.clear();
-    core::write!(&mut scratch_string, "first 4 byes: {},{},{},{}\r\n", read_buf[0], read_buf[1], read_buf[2], read_buf[3]).unwrap();
+    core::write!(&mut scratch_string, "post-write read value: {:?}\r\n", &read_buf[0..30]).unwrap();
     write_to_uart(&mut board_uart_tx, scratch_string.as_bytes());
 
+   }
 
-    neopixel.write([RGB {r:0, g:20, b:0}].into_iter()).unwrap();
-    loop {}
+
+    let mut i = 0usize;
     loop {
-        let result = mpu6050::mpu6050_read_latest(&mut i2c, 0x68);
-        scratch_string.clear();
-        core::write!(&mut scratch_string, "qx:{}, qy:{}, qz:{}, qw:{}\r\n", result.qx, result.qy, result.qz, result.qw).unwrap();
-        write_to_uart(&mut board_uart_tx, scratch_string.as_bytes());
+        neopixel.write([hsv2rgb(Hsv { hue: (i % 256) as u8, sat: 255, val: 30 })].into_iter()).unwrap();
+        i +=1;
+        delay.delay_ms(10u8);
+    } 
+//     mpu6050::mpu6050_reset_fifo(&mut i2c, MPU6050_ADDR);
+//     let mut j = 0;
+//     loop {
+//         let mut sbuffer = [0u8; 1];
+//         i2c.write_read(MPU6050_ADDR, &[0x3a],   &mut sbuffer).unwrap();
+//         let mut out = *b"status: 00000000\r\n";
+//         for i in 0..8 {
+//             if (sbuffer[0] & (1 << i)) != 0 {
+//                 out[out.len()-3-i] = b'1';
+//             }
+//         }
+//         write_to_uart(&mut board_uart_tx, &out);
+//         scratch_string.clear();
+//         core::write!(&mut scratch_string, "s:{}\r\n", out[0]).unwrap();
+//         write_to_uart(&mut board_uart_tx, scratch_string.as_bytes());
 
-        scratch_string.clear();
-        core::write!(&mut scratch_string, "gx:{}, gy:{}, gz:{}\r\n", result.gyro_x, result.gyro_y, result.gyro_z).unwrap();
-        core::write!(&mut scratch_string, "ax:{}, ay:{}, az:{}\r\n", result.accel_x, result.accel_y, result.accel_z).unwrap();
-        write_to_uart(&mut board_uart_tx, scratch_string.as_bytes());
+//         if (sbuffer[0] & 0b00010000) != 0 {
+//             neopixel.write([RGB {r:20, g:0, b:0}].into_iter()).unwrap();
+//         } else {
+//             neopixel.write([RGB {r:0, g:20, b:0}].into_iter()).unwrap();
+//         }
 
-        write_to_uart(&mut board_uart_tx, b"\r\n");
+//         i2c.write_read(MPU6050_ADDR, &[0x3a],   &mut sbuffer).unwrap();
+//         let mut out = *b"after: 00000000\r\n";
+//         for i in 0..8 {
+//             if (sbuffer[0] & (1 << i)) != 0 {
+//                 out[out.len()-3-i] = b'1';
+//             }
+//         }
+//         write_to_uart(&mut board_uart_tx, &out);
 
-        delay.delay_ms(500u16);
-    }
+//         let fifocount = mpu6050::mpu6050_get_fifo_count(&mut i2c, MPU6050_ADDR);
+
+//         scratch_string.clear();
+//         let delayms = j* 5u32;
+//         core::write!(&mut scratch_string, "count was {}, delaying {} ms\r\n", fifocount, delayms).unwrap();
+//         write_to_uart(&mut board_uart_tx, scratch_string.as_bytes());
+
+//         mpu6050::mpu6050_reset_fifo(&mut i2c, MPU6050_ADDR);
+//         delay.delay_ms(delayms);
+//         j += 1;
+
+//     }
+//     loop {
+//         mpu6050::mpu6050_reset_fifo(&mut i2c, MPU6050_ADDR);
+//         let result = mpu6050::mpu6050_read_fifo(&mut i2c, MPU6050_ADDR);
+//         scratch_string.clear();
+//         core::write!(&mut scratch_string, "qx:{}, qy:{}, qz:{}, qw:{}\r\n", result.qx, result.qy, result.qz, result.qw).unwrap();
+//         write_to_uart(&mut board_uart_tx, scratch_string.as_bytes());
+
+//         scratch_string.clear();
+//         core::write!(&mut scratch_string, "gx:{}, gy:{}, gz:{}\r\n", result.gyro_x, result.gyro_y, result.gyro_z).unwrap();
+//         core::write!(&mut scratch_string, "ax:{}, ay:{}, az:{}\r\n", result.accel_x, result.accel_y, result.accel_z).unwrap();
+//         write_to_uart(&mut board_uart_tx, scratch_string.as_bytes());
+
+//         write_to_uart(&mut board_uart_tx, b"\r\n");
+
+//         delay.delay_ms(500u16);
+//     }
 }
 
 

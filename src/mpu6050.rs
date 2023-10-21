@@ -151,9 +151,7 @@ pub(crate) fn mpu6050_test_panic<T: i2c::AnyConfig>(i2c: &mut i2c::I2c<T>, addre
 }
 
 
-pub(crate) fn mpu6050_read_latest_raw<T: i2c::AnyConfig>(i2c: &mut i2c::I2c<T>, address: u8) -> [u8; dmp_firmware::DMP_PACKET_SIZE] {
-    mpu6050_reset_fifo(i2c, address);
-
+pub(crate) fn mpu6050_read_fifo_raw<T: i2c::AnyConfig>(i2c: &mut i2c::I2c<T>, address: u8) -> [u8; dmp_firmware::DMP_PACKET_SIZE] {
     let mut count = mpu6050_get_fifo_count(i2c, address);
     while count < 28 {
         count = mpu6050_get_fifo_count(i2c, address);
@@ -164,8 +162,8 @@ pub(crate) fn mpu6050_read_latest_raw<T: i2c::AnyConfig>(i2c: &mut i2c::I2c<T>, 
 }
 
 
-pub(crate) fn mpu6050_read_latest<T: i2c::AnyConfig>(i2c: &mut i2c::I2c<T>, address: u8) -> MAPPData {
-    let fifo_raw = mpu6050_read_latest_raw(i2c, address);
+pub(crate) fn mpu6050_read_fifo<T: i2c::AnyConfig>(i2c: &mut i2c::I2c<T>, address: u8) -> MAPPData {
+    let fifo_raw = mpu6050_read_fifo_raw(i2c, address);
 
     let qw = ((fifo_raw[0] as i16) << 8) | fifo_raw[1] as i16;
     let qx = ((fifo_raw[4] as i16) << 8) | fifo_raw[5] as i16;
@@ -205,4 +203,19 @@ pub(crate) struct MAPPData {
     pub accel_x: i16,
     pub accel_y: i16,
     pub accel_z: i16,
+}
+
+impl MAPPData {
+    pub(crate) fn to_byte_array(&self, out: &mut [u8], offset: usize) -> usize{
+        let mut i = offset;
+        for elem in [self.qw, self.qx, self.qy, self.qz,
+                     self.gyro_x, self.gyro_y, self.gyro_z,
+                     self.accel_x, self.accel_y, self.accel_z] {
+            let elemb = elem.to_ne_bytes();
+            out[i] = elemb[0];
+            out[i+1] = elemb[1];
+            i+= 2;
+        }
+        i
+    }
 }
