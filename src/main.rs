@@ -137,7 +137,7 @@ fn main() -> ! {
         (true, false) => RunMode::FlashDump,
         (true, true) => RunMode::FlashDump,
     };
-    
+
     // set up MPU6050
     let sercom2_clock = &clocks.sercom2_core(&gclk0).unwrap();
     let (sda, scl) = (psda, pscl);
@@ -259,6 +259,8 @@ fn main() -> ! {
                     } else {
                         fifo_size = data.to_byte_array(&mut write_buf, buffer_idx);
                         buffer_idx += fifo_size;
+
+                        
                     }
                 } 
             }
@@ -305,6 +307,13 @@ fn main() -> ! {
                 scratch_string.clear();
                 core::write!(&mut scratch_string, "gx:{}, gy:{}, gz:{}\r\n", result.gyro_x, result.gyro_y, result.gyro_z).unwrap();
                 core::write!(&mut scratch_string, "ax:{}, ay:{}, az:{}\r\n", result.accel_x, result.accel_y, result.accel_z).unwrap();
+                write_to_uart(&mut board_uart_tx, scratch_string.as_bytes());
+
+
+                scratch_string.clear();
+                let mut barr = [0u8; 20];
+                result.to_byte_array(&mut barr, 0);
+                core::write!(&mut scratch_string, "bytes:\"{:?}\"\r\n", barr).unwrap();
                 write_to_uart(&mut board_uart_tx, scratch_string.as_bytes());
 
                 write_to_uart(&mut board_uart_tx, b"\r\n");

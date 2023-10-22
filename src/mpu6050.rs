@@ -211,11 +211,11 @@ impl MAPPData {
         for elem in [self.qw, self.qx, self.qy, self.qz,
                      self.gyro_x, self.gyro_y, self.gyro_z,
                      self.accel_x, self.accel_y, self.accel_z] {
-            let elemb = elem.to_ne_bytes();
+            let elemb = elem.to_le_bytes();
             out[i] = elemb[0];
             out[i+1] = elemb[1];
             i+= 2;
         }
-        i
+        i - offset
     }
 }
