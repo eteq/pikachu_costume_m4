@@ -7,6 +7,9 @@ edition = "2021"
 [package.metadata]
 chip = "ATSAMD51J19A"
 
+[dependencies.cortex-m]
+version = "0.7.7"
+
 [dependencies.cortex-m-rt]
 version = "0.7"
 
