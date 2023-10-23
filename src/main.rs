@@ -26,6 +26,7 @@ use hal::timer::*;
 use hal::sercom::{i2c, uart};
 use hal::gpio::{Pin, PinId, PushPullOutput};
 use hal::qspi;
+use hal::rtc;
 
 use core::fmt::Write;
 use heapless;
@@ -75,6 +76,7 @@ fn main() -> ! {
     let p10 = pins.pa20;
 
     let mut delay = Delay::new(core.SYST, &mut clocks);
+    
     let mut red_led = pd13.into_push_pull_output();
     red_led.set_high().unwrap();
 
@@ -136,6 +138,10 @@ fn main() -> ! {
         (true, false) => RunMode::FlashDump,
         (true, true) => RunMode::FlashDump,
     };
+    // set up the RTC
+    peripherals.OSC32KCTRL.rtcctrl.modify(|_, w| w.rtcsel().xosc32k());
+    let rtc = rtc::Rtc::count32_mode(peripherals.RTC, 32768.Hz(), &mut peripherals.MCLK).into_count32_mode();
+    
 
     // set up MPU6050
     let sercom2_clock = &clocks.sercom2_core(&gclk0).unwrap();
@@ -197,17 +203,22 @@ fn main() -> ! {
 
             // "regular" loop: read from MPU6050 and write to flash until full
             let mut write_buf = [0u8; FLASH_BLOCK_SIZE];
-            // 1 byte header
-            write_buf[0] = 1; // this just inidicates this block has data
-            let mut buffer_idx = 1usize;  
-            let mut fifo_size = 0usize;
+
+            // All data little-endian
+            // each page should include a u32 rtc timestamp as the first 4 bytes. 
+            // The rest of the page is mpudata in clumps of 20 bytes (all as i16)
+            // except last two bytes in page give the number if fifo items remaining at the start of writing the page (as u16)
+            let mut buffer_idx = rtc_to_buffer(&rtc, &mut write_buf, 0);
             let mut page_address = 0usize;
             mpu6050::mpu6050_reset_fifo(&mut i2c, MPU6050_ADDR);
             loop {
-
-                if (buffer_idx + fifo_size) > FLASH_BLOCK_SIZE {
+                if (buffer_idx + mpu6050::MPU6050_DATA_SIZE) > (FLASH_BLOCK_SIZE - 2) {
                     // Need to write out the buffer to flash
                     neopixel.write([RGB {r:20, g:20, b:0}].into_iter()).unwrap();
+
+                    let fifo_count_bytes = mpu6050::mpu6050_get_fifo_count(&mut i2c, MPU6050_ADDR).to_le_bytes();
+                    write_buf[FLASH_BLOCK_SIZE-2] = fifo_count_bytes[0];
+                    write_buf[FLASH_BLOCK_SIZE-1] = fifo_count_bytes[1];
 
                     flash_wait_ready(&mut flash);
                     flash.run_command(qspi::Command::WriteEnable).unwrap();
@@ -216,13 +227,11 @@ fn main() -> ! {
 
                     // reset the buffer 
                     for elem in write_buf.iter_mut() { *elem = 0; }
-                    write_buf[0] = 1;
-                    buffer_idx = 1usize;
+                    buffer_idx = rtc_to_buffer(&rtc, &mut write_buf, 0);
 
                     if page_address % (FLASH_BLOCK_SIZE * 25) == 0 {
                         scratch_string.clear();
-                        let fifo_count = mpu6050::mpu6050_get_fifo_count(&mut i2c, MPU6050_ADDR);
-                        core::write!(&mut scratch_string, "{} of {} blocks written in flash, fifo has {}\r\n", page_address/FLASH_BLOCK_SIZE, FLASH_TOTAL_BYTES/FLASH_BLOCK_SIZE, fifo_count).unwrap();
+                        core::write!(&mut scratch_string, "{} of {} blocks written in flash at time {}\r\n", page_address/FLASH_BLOCK_SIZE, FLASH_TOTAL_BYTES/FLASH_BLOCK_SIZE, rtc.count32()).unwrap();
                         write_to_uart(&mut board_uart_tx, scratch_string.as_bytes());
                     }
 
@@ -258,8 +267,8 @@ fn main() -> ! {
                         write_to_uart(&mut board_uart_tx, b"FIFO overflow! Discarding.\r\n");
                         //mpu6050::mpu6050_reset_fifo(&mut i2c, MPU6050_ADDR);
                     } else {
-                        fifo_size = data.to_byte_array(&mut write_buf, buffer_idx);
-                        buffer_idx += fifo_size;
+                         data.to_byte_array(&mut write_buf, buffer_idx);
+                        buffer_idx += mpu6050::MPU6050_DATA_SIZE;
 
                         
                     }
@@ -275,11 +284,11 @@ fn main() -> ! {
             let mut page_address = 0usize;
             while (page_address + FLASH_BLOCK_SIZE) <= FLASH_TOTAL_BYTES {
                 flash.read_memory(page_address as u32, &mut read_buf);
-                if read_buf[0] == 1 {
+                if (read_buf[0] == 255) && (read_buf[1] == 255) && (read_buf[2] == 255) && (read_buf[3] == 255)  {
+                    // empty block, skip.  Or timer overflow.  But still bunk.
+                } else {
                     // this is a data block
                     write_to_uart(&mut board_uart_tx, &read_buf);
-                } else {
-                    // this is a blank block, skip
                 }
                 page_address += FLASH_BLOCK_SIZE;
             }
@@ -360,4 +369,12 @@ fn halt(delay: &mut Delay) -> ! {
     delay.delay_ms(1000u16);
     asm::wfe();
     loop { }
+}
+
+fn rtc_to_buffer(rtc :&rtc::Rtc<rtc::Count32Mode>, write_buf: &mut [u8], offset: usize) -> usize{
+    let count_bytes = rtc.count32().to_le_bytes();
+    for i in 0..4 {
+        write_buf[i] = count_bytes[i];
+    }
+    offset + 4
 }

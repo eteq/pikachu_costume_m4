@@ -208,7 +208,7 @@ pub(crate) struct MAPPData {
 }
 
 impl MAPPData {
-    pub(crate) fn to_byte_array(&self, out: &mut [u8], offset: usize) -> usize{
+    pub(crate) fn to_byte_array(&self, out: &mut [u8], offset: usize){
         let mut i = offset;
         for elem in [self.qw, self.qx, self.qy, self.qz,
                      self.gyro_x, self.gyro_y, self.gyro_z,
@@ -218,6 +218,7 @@ impl MAPPData {
             out[i+1] = elemb[1];
             i+= 2;
         }
-        i - offset
     }
 }
+
+pub(crate) const MPU6050_DATA_SIZE: usize = core::mem::size_of::<MAPPData>();
