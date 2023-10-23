@@ -13,7 +13,7 @@ pub(crate) const MPU6050_REGADDR_MEM_R_W        : u8 = 0x6F;
 pub(crate) const MPU6050_REGADDR_DMP_PROG_START : u8 = 0x70;
 pub(crate) const MPU6050_REGADDR_DMP_CFG        : u8 = 0x71;
 
-pub(crate) const DMP_PACKET_SIZE: usize = 28;
+pub(crate) const DMP_PACKET_SIZE: usize = 30;  // it's supposed to be 28 but for some reason there's an extra 2 bytes at the end...
 
 // The above information is not documented in the register pdf so we record them here
 

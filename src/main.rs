@@ -107,7 +107,7 @@ fn main() -> ! {
         //pin_alias!(pins.uart_tx),
     );
     let (mut _board_uart_rx, mut board_uart_tx) = board_uart.split();
-    let mut scratch_string: heapless::String<256> = heapless::String::new();
+    let mut scratch_string: heapless::String<2560> = heapless::String::new();
 
     // Check if there was a panic message, if so, send to UART and noop loop
     if let Some(msg) = panic_persist::get_panic_message_bytes() {
@@ -115,8 +115,7 @@ fn main() -> ! {
         write_to_uart(&mut board_uart_tx, b"Previous panic message:\r\n");
         write_to_uart(&mut board_uart_tx, msg);
         write_to_uart(&mut board_uart_tx, b"\r\nHalting for panic\r\n\r\n");
-        asm::wfe();
-        loop { }
+        halt(&mut delay);
     }
 
     // get the mode from the gpios
@@ -222,7 +221,8 @@ fn main() -> ! {
 
                     if page_address % (FLASH_BLOCK_SIZE * 25) == 0 {
                         scratch_string.clear();
-                        core::write!(&mut scratch_string, "{} of {} blocks written in flash\r\n", page_address/FLASH_BLOCK_SIZE, FLASH_TOTAL_BYTES/FLASH_BLOCK_SIZE).unwrap();
+                        let fifo_count = mpu6050::mpu6050_get_fifo_count(&mut i2c, MPU6050_ADDR);
+                        core::write!(&mut scratch_string, "{} of {} blocks written in flash, fifo has {}\r\n", page_address/FLASH_BLOCK_SIZE, FLASH_TOTAL_BYTES/FLASH_BLOCK_SIZE, fifo_count).unwrap();
                         write_to_uart(&mut board_uart_tx, scratch_string.as_bytes());
                     }
 
@@ -240,8 +240,7 @@ fn main() -> ! {
                         write_to_uart(&mut board_uart_tx, b"Alternate Mode triggered! Pausing until reset.\r\n");
                         neopixel.write([RGB {r:20, g:0, b:0}].into_iter()).unwrap();
 
-                        asm::wfe();
-                        loop { }
+                        halt(&mut delay);
                     }
 
                     neopixel.write([RGB {r:0, g:20, b:0}].into_iter()).unwrap();
@@ -249,13 +248,15 @@ fn main() -> ! {
 
                 if mpu6050::mpu6050_get_fifo_count(&mut i2c, MPU6050_ADDR) >= 28 {
                     let data = mpu6050::mpu6050_read_fifo(&mut i2c, MPU6050_ADDR);
+                    //mpu6050::mpu6050_reset_fifo(&mut i2c, MPU6050_ADDR);
+                    //let remaining_count = mpu6050::mpu6050_get_fifo_count(&mut i2c, MPU6050_ADDR);
 
                     // check for overflow and only use data if there isn't one
                     let mut status_buffer = [0u8; 1];
                     i2c.write_read(MPU6050_ADDR, &[0x3a], &mut status_buffer).unwrap();
                     if (status_buffer[0] & 0b00010000) != 0 {
                         write_to_uart(&mut board_uart_tx, b"FIFO overflow! Discarding.\r\n");
-                        mpu6050::mpu6050_reset_fifo(&mut i2c, MPU6050_ADDR);
+                        //mpu6050::mpu6050_reset_fifo(&mut i2c, MPU6050_ADDR);
                     } else {
                         fifo_size = data.to_byte_array(&mut write_buf, buffer_idx);
                         buffer_idx += fifo_size;
@@ -270,7 +271,6 @@ fn main() -> ! {
             blink_led(50u16, 3, &mut red_led, &mut delay);
             neopixel.write([RGB {r:20, g:20, b:0}].into_iter()).unwrap();
 
-            //TODO: write dump code
             let mut read_buf = [0u8; FLASH_BLOCK_SIZE];
             let mut page_address = 0usize;
             while (page_address + FLASH_BLOCK_SIZE) <= FLASH_TOTAL_BYTES {
@@ -287,8 +287,7 @@ fn main() -> ! {
             //write_to_uart(&mut board_uart_tx, b"\r\nDump completed, halting.");
             blink_led(50u16, 5, &mut red_led, &mut delay);
             neopixel.write([RGB {r:20, g:0, b:0}].into_iter()).unwrap();
-            asm::wfe();
-            loop { }
+            halt(&mut delay)
         },
         RunMode::DataReadout => {
             write_to_uart(&mut board_uart_tx, b"Starting data readout mode\r\n");
@@ -297,7 +296,7 @@ fn main() -> ! {
             loop {
                 mpu6050::mpu6050_reset_fifo(&mut i2c, MPU6050_ADDR);
 
-                while mpu6050::mpu6050_get_fifo_count(&mut i2c, MPU6050_ADDR) < 28 { }
+                while (mpu6050::mpu6050_get_fifo_count(&mut i2c, MPU6050_ADDR) as usize) < mpu6050::DMP_PACKET_SIZE { }
 
                 let result = mpu6050::mpu6050_read_fifo(&mut i2c, MPU6050_ADDR);
                 scratch_string.clear();
@@ -355,4 +354,10 @@ where
         led.set_low().unwrap();
         delay.delay_ms(ms);
     }
+}
+
+fn halt(delay: &mut Delay) -> ! {
+    delay.delay_ms(1000u16);
+    asm::wfe();
+    loop { }
 }

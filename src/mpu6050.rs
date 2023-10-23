@@ -11,6 +11,7 @@ use hal::prelude::*;
 use hal::delay::Delay;
 use hal::sercom::i2c;
 
+pub(crate) use dmp_firmware::DMP_PACKET_SIZE;
 
 
 pub(crate) fn mpu6050_setup<T: i2c::AnyConfig>(i2c: &mut i2c::I2c<T>, delay: &mut Delay, address: u8) {
@@ -151,12 +152,13 @@ pub(crate) fn mpu6050_test_panic<T: i2c::AnyConfig>(i2c: &mut i2c::I2c<T>, addre
 }
 
 
-pub(crate) fn mpu6050_read_fifo_raw<T: i2c::AnyConfig>(i2c: &mut i2c::I2c<T>, address: u8) -> [u8; dmp_firmware::DMP_PACKET_SIZE] {
+// For unclear reasons there are an additional 2 bytes that need reading even though the packet is supposet to be opnly 28 bytes
+pub(crate) fn mpu6050_read_fifo_raw<T: i2c::AnyConfig>(i2c: &mut i2c::I2c<T>, address: u8) -> [u8; dmp_firmware::DMP_PACKET_SIZE+2] {
     let mut count = mpu6050_get_fifo_count(i2c, address);
     while count < 28 {
         count = mpu6050_get_fifo_count(i2c, address);
     }
-    let mut fifo = [0; dmp_firmware::DMP_PACKET_SIZE];
+    let mut fifo = [0; dmp_firmware::DMP_PACKET_SIZE+2];
     i2c.write_read(address, &[116], &mut fifo).unwrap();
     fifo
 }
