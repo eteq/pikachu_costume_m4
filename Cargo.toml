@@ -3,6 +3,16 @@ name = "pikachu_costume_m4"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "main"
+path = "src/main.rs"
+
+
+[[bin]]
+name = "accel_dumper"
+path = "src/accel_dumper.rs"
+
+
 # for cargo flash
 [package.metadata]
 chip = "ATSAMD51J19A"
