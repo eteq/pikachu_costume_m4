@@ -1,11 +1,6 @@
 #![no_std]
 #![no_main]
 
-// Neopixel Rainbow
-// This only functions when the --release version is compiled. Using the debug
-// version leads to slow pulse durations which results in a straight white LED
-// output.
-//
 // // Needs to be compiled with --release for the timing to be correct
 
 use panic_persist;
@@ -25,22 +20,20 @@ use hal::time::Hertz;
 use hal::timer::*;
 use hal::sercom::{i2c, uart};
 use hal::gpio::{Pin, PinId, PushPullOutput};
-use hal::qspi;
-use hal::rtc;
 
-use core::fmt::Write;
-use heapless;
+//use core::fmt::Write;
+//use heapless;
 
 use smart_leds::{
-    hsv::{hsv2rgb, Hsv},
     SmartLedsWrite,
     RGB,
 };
 use ws2812_timer_delay::Ws2812;
 
 const MPU6050_ADDR: u8 = 0x68;
-const FLASH_BLOCK_SIZE: usize = 256;  // bytes
-const FLASH_TOTAL_BYTES: usize = 2*1024*1024;  // bytes
+
+const TAIL_STRIP_NPIX: usize = 20;
+const HEAD_STRIP_NPIX: usize = 35;
 
 
 #[entry]
@@ -64,17 +57,8 @@ fn main() -> ! {
     let pneopixel = pins.pb03;
     let pscl = pins.pa13;
     let psda = pins.pa12;
-    let pqspi_sck = pins.pb10;
-    let pqspi_cs = pins.pb11;
-    let pqspi_io0 = pins.pa08;
-    let pqspi_io1 = pins.pa09;
-    let pqspi_io2 = pins.pa10;
-    let pqspi_io3 = pins.pa11;
-    let p5 = pins.pa16;
-    let p6 = pins.pa18;
-    let p9 = pins.pa19;
-    let p10 = pins.pa20;
-
+    let d4 = pins.pa14;  //tail strip
+    let d5 = pins.pa16;  //head strip
     let mut delay = Delay::new(core.SYST, &mut clocks);
     
     let mut red_led = pd13.into_push_pull_output();
@@ -86,7 +70,7 @@ fn main() -> ! {
     let mut timer = TimerCounter::tc3_(&timer_clock, peripherals.TC3, &mut peripherals.MCLK);
     timer.start(Hertz::MHz(3).into_duration());
 
-    // set up neopixel
+    // set up built-in neopixel
     let neopixel_pin = pneopixel.into_push_pull_output();
     let mut neopixel = Ws2812::new(timer, neopixel_pin);
 
@@ -105,11 +89,9 @@ fn main() -> ! {
         &mut peripherals.MCLK,
         puart_rx,
         puart_tx
-        //pin_alias!(pins.uart_rx),
-        //pin_alias!(pins.uart_tx),
     );
     let (mut _board_uart_rx, mut board_uart_tx) = board_uart.split();
-    let mut scratch_string: heapless::String<2560> = heapless::String::new();
+    //let mut scratch_string: heapless::String<2560> = heapless::String::new();
 
     // Check if there was a panic message, if so, send to UART and noop loop
     if let Some(msg) = panic_persist::get_panic_message_bytes() {
@@ -119,28 +101,6 @@ fn main() -> ! {
         write_to_uart(&mut board_uart_tx, b"\r\nHalting for panic\r\n\r\n");
         halt(&mut delay);
     }
-
-    // get the mode from the gpios
-    p9.into_push_pull_output().set_low().unwrap();
-    p10.into_push_pull_output().set_low().unwrap();
-    let p5i = p5.into_pull_up_input();
-    let p6i = p6.into_pull_up_input();
-    delay.delay_ms(1u8);  // let them settle if they need to
-
-    enum RunMode {
-        Record,
-        FlashDump,
-        DataReadout,
-    }
-    let mode = match (p5i.is_low().unwrap(), p6i.is_low().unwrap()) {
-        (false, false) => RunMode::Record,
-        (false, true) => RunMode::DataReadout,
-        (true, false) => RunMode::FlashDump,
-        (true, true) => RunMode::FlashDump,
-    };
-    // set up the RTC
-    peripherals.OSC32KCTRL.rtcctrl.modify(|_, w| w.rtcsel().xosc32k());
-    let rtc = rtc::Rtc::count32_mode(peripherals.RTC, 32768.Hz(), &mut peripherals.MCLK).into_count32_mode();
     
 
     // set up MPU6050
@@ -152,205 +112,57 @@ fn main() -> ! {
         .baud(100.kHz())
         .enable();
     
-    if core::matches!(mode, RunMode::Record | RunMode::DataReadout) {
-        mpu6050::mpu6050_setup(&mut i2c, &mut delay, MPU6050_ADDR);
-    }
+    mpu6050::mpu6050_setup(&mut i2c, &mut delay, MPU6050_ADDR);
     
-    // setup flash
-    // https://github.com/atsamd-rs/atsamd/blob/master/hal/src/thumbv7em/qspi.rs and  https://github.com/atsamd-rs/atsamd/blob/master/boards/wio_terminal/examples/qspi.rs are useful here
-    // as perhaps is https://cdn-shop.adafruit.com/product-files/4763/4763_GD25Q16CTIGR.pdf
-    let mut flash = qspi::Qspi::new(
-        &mut peripherals.MCLK,
-        peripherals.QSPI,
-        pqspi_sck,
-        pqspi_cs,
-        pqspi_io0,
-        pqspi_io1,
-        pqspi_io2,
-        pqspi_io3,
-    );
-
-    if core::matches!(mode, RunMode::Record | RunMode::FlashDump) {
-        flash_wait_ready(&mut flash);
-        flash.run_command(qspi::Command::EnableReset).unwrap();
-        flash.run_command(qspi::Command::Reset).unwrap();
-        delay.delay_ms(15u8);
-
-        // 60 MHz I think? 120/(3-1)
-        flash.set_clk_divider(3);
-
-        // enable QSPI
-        flash.write_command(qspi::Command::WriteStatus, &[0x00, 0x02]).unwrap();
-
-        // only erase the flash if recording in normal mode
-        if core::matches!(mode, RunMode::Record) {
-            flash_wait_ready(&mut flash);
-            flash.run_command(qspi::Command::WriteEnable).unwrap();
-            write_to_uart(&mut board_uart_tx, b"erasing chip, please wait... ");
-            flash.erase_command(qspi::Command::EraseChip, 0x0).unwrap();
-            flash_wait_ready(&mut flash);
-            write_to_uart(&mut board_uart_tx, b"Done erasing!\r\n");
-        }
-    }
-
-    // Neopixel turns magenta after setup
+    // Neopixel turns magenta after main setup
     neopixel.write([RGB {r:0, g:20, b:20}].into_iter()).unwrap();
 
+    // set up the strips, initialize 10% power white.
+    let timer_clock45 = clocks.tc4_tc5(&gclk0).unwrap();
 
-    match mode {
-        RunMode::Record => {
-            write_to_uart(&mut board_uart_tx, b"Starting normal mode\r\n");
+    let mut timer4 = TimerCounter::tc4_(&timer_clock45, peripherals.TC4, &mut peripherals.MCLK);
+    timer4.start(Hertz::MHz(3).into_duration());
+    let mut head_strip = Ws2812::new(timer4, d4.into_push_pull_output());
 
-            // "regular" loop: read from MPU6050 and write to flash until full
-            let mut write_buf = [0u8; FLASH_BLOCK_SIZE];
+    let mut timer5 = TimerCounter::tc5_(&timer_clock45, peripherals.TC5, &mut peripherals.MCLK);
+    timer5.start(Hertz::MHz(3).into_duration());
+    let mut tail_strip = Ws2812::new(timer5, d5.into_push_pull_output());
 
-            // All data little-endian
-            // each page should include a u32 rtc timestamp as the first 4 bytes. 
-            // The rest of the page is mpudata in clumps of 20 bytes (all as i16)
-            // except last two bytes in page give the number if fifo items remaining at the start of writing the page (as u16)
-            let mut buffer_idx = rtc_to_buffer(&rtc, &mut write_buf, 0);
-            let mut page_address = 0usize;
-            mpu6050::mpu6050_reset_fifo(&mut i2c, MPU6050_ADDR);
-            loop {
-                if (buffer_idx + mpu6050::MPU6050_DATA_SIZE) > (FLASH_BLOCK_SIZE - 2) {
-                    // Need to write out the buffer to flash
-                    neopixel.write([RGB {r:20, g:20, b:0}].into_iter()).unwrap();
+    let mut head_colors = [RGB {r:25, g:25, b:25} ; HEAD_STRIP_NPIX];
+    let mut tail_colors = [RGB {r:25, g:25, b:25} ; TAIL_STRIP_NPIX];
 
-                    let fifo_count_bytes = mpu6050::mpu6050_get_fifo_count(&mut i2c, MPU6050_ADDR).to_le_bytes();
-                    write_buf[FLASH_BLOCK_SIZE-2] = fifo_count_bytes[0];
-                    write_buf[FLASH_BLOCK_SIZE-1] = fifo_count_bytes[1];
+    head_strip.write(head_colors.into_iter()).unwrap();
+    tail_strip.write(tail_colors.into_iter()).unwrap();
 
-                    flash_wait_ready(&mut flash);
-                    flash.run_command(qspi::Command::WriteEnable).unwrap();
-                    flash.write_memory(page_address as u32, &write_buf);
-                    page_address += FLASH_BLOCK_SIZE;
+    // turn off the built-in neopixel
+    neopixel.write([RGB {r:0, g:0, b:0}].into_iter()).unwrap();
 
-                    // reset the buffer 
-                    for elem in write_buf.iter_mut() { *elem = 0; }
-                    buffer_idx = rtc_to_buffer(&rtc, &mut write_buf, 0);
+    let mut i = 1;
+    loop {
+        let j = i - 1;
+        head_colors[j % HEAD_STRIP_NPIX] = RGB {r:25, g:25, b:25};
+        head_colors[i % HEAD_STRIP_NPIX] = RGB {r:0, g:0, b:0};
+        tail_colors[j % TAIL_STRIP_NPIX] = RGB {r:25, g:25, b:25};
+        tail_colors[i % TAIL_STRIP_NPIX] = RGB {r:0, g:0, b:0};
+        head_strip.write(head_colors.into_iter()).unwrap();
+        tail_strip.write(tail_colors.into_iter()).unwrap();
 
-                    if page_address % (FLASH_BLOCK_SIZE * 25) == 0 {
-                        scratch_string.clear();
-                        core::write!(&mut scratch_string, "{} of {} blocks written in flash at time {}\r\n", page_address/FLASH_BLOCK_SIZE, FLASH_TOTAL_BYTES/FLASH_BLOCK_SIZE, rtc.count32()).unwrap();
-                        write_to_uart(&mut board_uart_tx, scratch_string.as_bytes());
-                    }
+        i += 1;
 
-                    if (page_address + FLASH_BLOCK_SIZE) > FLASH_TOTAL_BYTES{
-                        write_to_uart(&mut board_uart_tx, b"Flash full! Stopping.\r\n");
-                        
-                        // enter endless rainbow loop
-                        let mut i = 0usize;
-                        loop {
-                            neopixel.write([hsv2rgb(Hsv { hue: (i % 256) as u8, sat: 255, val: 30 })].into_iter()).unwrap();
-                            i +=1;
-                            delay.delay_ms(10u8);
-                        }
-                    } else if p5i.is_low().unwrap() || p6i.is_low().unwrap() {
-                        write_to_uart(&mut board_uart_tx, b"Alternate Mode triggered! Pausing until reset.\r\n");
-                        neopixel.write([RGB {r:20, g:0, b:0}].into_iter()).unwrap();
+        delay.delay_ms(50u32);
+   }
 
-                        halt(&mut delay);
-                    }
-
-                    neopixel.write([RGB {r:0, g:20, b:0}].into_iter()).unwrap();
-                }
-
-                if mpu6050::mpu6050_get_fifo_count(&mut i2c, MPU6050_ADDR) >= 28 {
-                    let data = mpu6050::mpu6050_read_fifo(&mut i2c, MPU6050_ADDR);
-                    //mpu6050::mpu6050_reset_fifo(&mut i2c, MPU6050_ADDR);
-                    //let remaining_count = mpu6050::mpu6050_get_fifo_count(&mut i2c, MPU6050_ADDR);
-
-                    // check for overflow and only use data if there isn't one
-                    let mut status_buffer = [0u8; 1];
-                    i2c.write_read(MPU6050_ADDR, &[0x3a], &mut status_buffer).unwrap();
-                    if (status_buffer[0] & 0b00010000) != 0 {
-                        write_to_uart(&mut board_uart_tx, b"FIFO overflow! Discarding.\r\n");
-                        //mpu6050::mpu6050_reset_fifo(&mut i2c, MPU6050_ADDR);
-                    } else {
-                         data.to_byte_array(&mut write_buf, buffer_idx);
-                        buffer_idx += mpu6050::MPU6050_DATA_SIZE;
-
-                        
-                    }
-                } 
-            }
-        },
-        RunMode::FlashDump => {
-            //write_to_uart(&mut board_uart_tx, b"Starting flash dump mode\r\n");
-            blink_led(50u16, 3, &mut red_led, &mut delay);
-            neopixel.write([RGB {r:20, g:20, b:0}].into_iter()).unwrap();
-
-            let mut read_buf = [0u8; FLASH_BLOCK_SIZE];
-            let mut page_address = 0usize;
-            while (page_address + FLASH_BLOCK_SIZE) <= FLASH_TOTAL_BYTES {
-                flash.read_memory(page_address as u32, &mut read_buf);
-                if (read_buf[0] == 255) && (read_buf[1] == 255) && (read_buf[2] == 255) && (read_buf[3] == 255)  {
-                    // empty block, skip.  Or timer overflow.  But still bunk.
-                } else {
-                    // this is a data block
-                    write_to_uart(&mut board_uart_tx, &read_buf);
-                }
-                page_address += FLASH_BLOCK_SIZE;
-            }
-
-            //write_to_uart(&mut board_uart_tx, b"\r\nDump completed, halting.");
-            blink_led(50u16, 5, &mut red_led, &mut delay);
-            neopixel.write([RGB {r:20, g:0, b:0}].into_iter()).unwrap();
-            halt(&mut delay)
-        },
-        RunMode::DataReadout => {
-            write_to_uart(&mut board_uart_tx, b"Starting data readout mode\r\n");
-            neopixel.write([RGB {r:20, g:20, b:20}].into_iter()).unwrap();
-
-            loop {
-                mpu6050::mpu6050_reset_fifo(&mut i2c, MPU6050_ADDR);
-
-                while (mpu6050::mpu6050_get_fifo_count(&mut i2c, MPU6050_ADDR) as usize) < mpu6050::DMP_PACKET_SIZE { }
-
-                let result = mpu6050::mpu6050_read_fifo(&mut i2c, MPU6050_ADDR);
-                scratch_string.clear();
-                core::write!(&mut scratch_string, "qx:{}, qy:{}, qz:{}, qw:{}\r\n", result.qx, result.qy, result.qz, result.qw).unwrap();
-                write_to_uart(&mut board_uart_tx, scratch_string.as_bytes());
-
-                scratch_string.clear();
-                core::write!(&mut scratch_string, "gx:{}, gy:{}, gz:{}\r\n", result.gyro_x, result.gyro_y, result.gyro_z).unwrap();
-                core::write!(&mut scratch_string, "ax:{}, ay:{}, az:{}\r\n", result.accel_x, result.accel_y, result.accel_z).unwrap();
-                write_to_uart(&mut board_uart_tx, scratch_string.as_bytes());
-
-
-                scratch_string.clear();
-                let mut barr = [0u8; 20];
-                result.to_byte_array(&mut barr, 0);
-                core::write!(&mut scratch_string, "bytes:\"{:?}\"\r\n", barr).unwrap();
-                write_to_uart(&mut board_uart_tx, scratch_string.as_bytes());
-
-                write_to_uart(&mut board_uart_tx, b"\r\n");
-
-            }
-        },
-    }
 }
 
 
-fn flash_wait_ready(flash: &mut qspi::Qspi<qspi::OneShot>) {
-    let mut out1 = [0u8; 1];
-    let mut out2 = [0u8; 1];
-
-    flash.read_command(qspi::Command::ReadStatus, &mut out1).unwrap();
-    flash.read_command(qspi::Command::ReadStatus2, &mut out2).unwrap();
-    while (out1[0] & 1u8) == 1 || (out1[0] & 0b10000000u8) == 1  {
-        flash.read_command(qspi::Command::ReadStatus, &mut out1).unwrap();
-        flash.read_command(qspi::Command::ReadStatus2, &mut out2).unwrap();
-    }
-}
-
-
+#[allow(dead_code)]
 fn write_to_uart<T: uart::ValidConfig>(tx: &mut uart::Uart<T, uart::TxDuplex>, 
                  msg: &[T::Word]) {
     for c in msg.iter() {
         nb::block!(tx.write(*c)).unwrap();
     }
 }
+
 
 #[allow(dead_code)]
 fn blink_led<P>(ms: u16, n:usize, led: &mut Pin<P, PushPullOutput>, delay: &mut Delay) 
@@ -369,12 +181,4 @@ fn halt(delay: &mut Delay) -> ! {
     delay.delay_ms(1000u16);
     asm::wfe();
     loop { }
-}
-
-fn rtc_to_buffer(rtc :&rtc::Rtc<rtc::Count32Mode>, write_buf: &mut [u8], offset: usize) -> usize{
-    let count_bytes = rtc.count32().to_le_bytes();
-    for i in 0..4 {
-        write_buf[i] = count_bytes[i];
-    }
-    offset + 4
 }

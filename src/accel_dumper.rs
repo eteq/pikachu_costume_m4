@@ -1,11 +1,6 @@
 #![no_std]
 #![no_main]
 
-// Neopixel Rainbow
-// This only functions when the --release version is compiled. Using the debug
-// version leads to slow pulse durations which results in a straight white LED
-// output.
-//
 // // Needs to be compiled with --release for the timing to be correct
 
 use panic_persist;
@@ -42,6 +37,7 @@ const MPU6050_ADDR: u8 = 0x68;
 const FLASH_BLOCK_SIZE: usize = 256;  // bytes
 const FLASH_TOTAL_BYTES: usize = 2*1024*1024;  // bytes
 
+const READOUT_DELAY: u32 = 250;  // ms
 
 #[entry]
 fn main() -> ! {
@@ -319,12 +315,22 @@ fn main() -> ! {
 
 
                 scratch_string.clear();
-                let mut barr = [0u8; 20];
-                result.to_byte_array(&mut barr, 0);
-                core::write!(&mut scratch_string, "bytes:\"{:?}\"\r\n", barr).unwrap();
+                core::write!(&mut scratch_string, "x maps to:{:?}\r\n", result.to_alignment_vector_x()).unwrap();
+                write_to_uart(&mut board_uart_tx, scratch_string.as_bytes());
+                scratch_string.clear();
+                core::write!(&mut scratch_string, "y maps to:{:?}\r\n", result.to_alignment_vector_y()).unwrap();
+                write_to_uart(&mut board_uart_tx, scratch_string.as_bytes());
+                scratch_string.clear();
+                core::write!(&mut scratch_string, "z maps to:{:?}\r\n", result.to_alignment_vector_z()).unwrap();
+                write_to_uart(&mut board_uart_tx, scratch_string.as_bytes());
+
+                scratch_string.clear();
+                core::write!(&mut scratch_string, "z-accel:{:e}\r\n", result.to_z_accel()).unwrap();
                 write_to_uart(&mut board_uart_tx, scratch_string.as_bytes());
 
                 write_to_uart(&mut board_uart_tx, b"\r\n");
+
+                delay.delay_ms(READOUT_DELAY);
 
             }
         },

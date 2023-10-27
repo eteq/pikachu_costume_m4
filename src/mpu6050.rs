@@ -4,6 +4,8 @@
 
 mod dmp_firmware;
 
+use micromath::F32Ext;
+
 use feather_m4 as bsp;
 use bsp::hal;
 
@@ -12,6 +14,8 @@ use hal::delay::Delay;
 use hal::sercom::i2c;
 
 pub(crate) use dmp_firmware::DMP_PACKET_SIZE;
+
+const ACCEL_SCALE : f32 = 2.0;
 
 
 pub(crate) fn mpu6050_setup<T: i2c::AnyConfig>(i2c: &mut i2c::I2c<T>, delay: &mut Delay, address: u8) {
@@ -29,6 +33,7 @@ pub(crate) fn mpu6050_setup<T: i2c::AnyConfig>(i2c: &mut i2c::I2c<T>, delay: &mu
     i2c.write(address, &[56,  0b00000000]).unwrap(); // no interrupts
     i2c.write(address, &[35,  0b00000000]).unwrap(); // Turn off regular FIFO to use DMP FIFO instead
     i2c.write(address, &[28,  0b00000000]).unwrap(); // 2g full scale accelerometer
+    assert!(ACCEL_SCALE == 2.0);
     i2c.write(address, &[55,  0b10010000]).unwrap(); //logic level for int pin low, and clear int status on any read MAY NOT BE NEEDED?
     i2c.write(address, &[107, 0b00000001]).unwrap(); // Clock to PLL with X axis gyroscope reference, dont sleep
     i2c.write(address, &[26,  0b00000001]).unwrap(); // no external synchronization, set the DLPF to 184/188 Hz bandwidth
@@ -218,6 +223,54 @@ impl MAPPData {
             out[i+1] = elemb[1];
             i+= 2;
         }
+    }
+
+    pub(crate) fn q_to_float(&self) -> (f32, f32, f32, f32) {
+        let wf = (self.qw as f32) / (i16::MAX as f32);
+        let xf = (self.qx as f32) / (i16::MAX as f32);
+        let yf = (self.qy as f32) / (i16::MAX as f32);
+        let zf = (self.qz as f32) / (i16::MAX as f32);
+        (wf, xf, yf, zf)
+    }
+
+    // Where the quaternion maps the x-axis to
+    pub(crate) fn to_alignment_vector_x(&self) -> (f32, f32, f32){
+        let (qw, qx, qy, qz)  = self.q_to_float();
+        let x = qw*qw - qx*qx - qy*qy - qz*qz;
+        let y = 2.*(qw*qz + qx*qy);
+        let z = 2.*(qx*qz - qw*qy);
+        let n = f32::sqrt(x*x + y*y + z*z);
+        (x/n, y/n, z/n)
+    }
+
+    // Where the quaternion maps the y-axis to
+    pub(crate) fn to_alignment_vector_y(&self) -> (f32, f32, f32){
+        let (qw, qx, qy, qz)  = self.q_to_float();
+        let x = 2.*(qx*qy - qw*qz);
+        let y =  qw*qw - qx*qx + qy*qy - qz*qz;
+        let z = 2.*(qy*qz + qw*qx);
+        let n = f32::sqrt(x*x + y*y + z*z);
+        (x/n, y/n, z/n)
+    }
+
+    // Where the quaternion maps the z-axis to
+    pub(crate) fn to_alignment_vector_z(&self) -> (f32, f32, f32){
+        let (qw, qx, qy, qz)  = self.q_to_float();
+        let x = 2.*(qw*qy + qx*qz);
+        let y = 2.*(qy*qz - qw*qx);
+        let z = qw*qw - qx*qx - qy*qy + qz*qz;
+        let n = f32::sqrt(x*x + y*y + z*z);
+        (x/n, y/n, z/n)
+    }
+
+    // sign might be wrong in the quaternion application!
+    pub(crate) fn to_z_accel(&self) -> f32{
+        let (qw, qx, qy, qz)  = self.q_to_float();
+        let ax = (self.accel_x as f32) / (i16::MAX as f32);
+        let ay = (self.accel_y as f32) / (i16::MAX as f32);
+        let az = (self.accel_z as f32) / (i16::MAX as f32);
+        let normed = qw*(-ax*qy + ay*qx + az*qw) + qx*(ax*qz + ay*qw - az*qx) - qy*(ax*qw - ay*qz + az*qy) + qz*(ax*qx + ay*qy + az*qz);
+        normed * ACCEL_SCALE
     }
 }
 
