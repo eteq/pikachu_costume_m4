@@ -18,7 +18,7 @@ use hal::pac::{CorePeripherals, Peripherals};
 use hal::prelude::*;
 use hal::time::Hertz;
 use hal::timer::*;
-use hal::sercom::{i2c, uart};
+use hal::sercom::{i2c, uart, spi};
 use hal::gpio::{Pin, PinId, PushPullOutput};
 use hal::rtc;
 
@@ -33,7 +33,8 @@ use smart_leds::{
     RGB,
     hsv::{hsv2rgb, Hsv},
 };
-use ws2812_timer_delay::Ws2812;
+use ws2812_timer_delay;
+use ws2812_spi;
 
 const MPU6050_ADDR: u8 = 0x68;
 const RTC_FREQ: Rate<u32, 1, 1> = Rate::<u32, 1, 1>::from_raw(32768);
@@ -83,9 +84,9 @@ fn main() -> ! {
     let pneopixel = pins.pb03;
     let pscl = pins.pa13;
     let psda = pins.pa12;
-    let _d4 = pins.pa14;  //tail strip
-    let a4 = pins.pa04;  //tail strip alternate
-    let d5 = pins.pa16;  //head strip
+    //let d4 = pins.pa14;  //tail strip
+    //let _a4 = pins.pa04;  //tail strip alternate
+    //let d5 = pins.pa16;  //head strip
     let mut delay = Delay::new(core.SYST, &mut clocks);
     
     let mut red_led = pd13.into_push_pull_output();
@@ -94,13 +95,12 @@ fn main() -> ! {
     // set up timer for neopixel
     let gclk0 = clocks.gclk0();
     let timer_clock23 = clocks.tc2_tc3(&gclk0).unwrap();
-    let timer_clock45 = clocks.tc4_tc5(&gclk0).unwrap();
     let mut timer = TimerCounter::tc2_(&timer_clock23, peripherals.TC2, &mut peripherals.MCLK);
     timer.start(Hertz::MHz(3).into_duration());
 
     // set up built-in neopixel
     let neopixel_pin = pneopixel.into_push_pull_output();
-    let mut neopixel = Ws2812::new(timer, neopixel_pin);
+    let mut neopixel = ws2812_timer_delay::Ws2812::new(timer, neopixel_pin);
 
     // Neopixel starts blue for setup
     neopixel.write([RGB {r:0, g:0, b:20}].into_iter()).unwrap();
@@ -150,13 +150,35 @@ fn main() -> ! {
     neopixel.write([RGB {r:0, g:20, b:20}].into_iter()).unwrap();
 
     // set up the strips, initialize 10% power white.
-    let mut timer4 = TimerCounter::tc4_(&timer_clock45, peripherals.TC4, &mut peripherals.MCLK);
-    timer4.start(Hertz::MHz(3).into_duration());
-    let mut timer5 = TimerCounter::tc5_(&timer_clock45, peripherals.TC5, &mut peripherals.MCLK);
-    timer5.start(Hertz::MHz(3).into_duration());
+    //let timer_clock45 = clocks.tc4_tc5(&gclk0).unwrap();
+    // let mut timer4 = TimerCounter::tc4_(&timer_clock45, peripherals.TC4, &mut peripherals.MCLK);
+    // timer4.start(Hertz::MHz(3).into_duration());
+    // let mut  = TimerCounter::tc5_(&timer_clock45, peripherals.TC5, &mut peripherals.MCLK);
+    // timer5.start(Hetimer5rtz::MHz(3).into_duration());
 
-    let mut head_strip = Ws2812::new(timer4, a4.into_push_pull_output());
-    let mut tail_strip = Ws2812::new(timer5, d5.into_push_pull_output());
+    //let mut head_strip = ws2812_timer_delay::Ws2812::new(timer4, a4.into_push_pull_output());
+    //let mut tail_strip = ws2812_timer_delay::Ws2812::new(timer5, d5.into_push_pull_output());
+
+    // note sercom 2 and 5 are already taken above for i2c and uart. SErcom 1 is the default SPI, so we use that plus 4
+
+    let pads_spi1 = spi::Pads::<hal::sercom::Sercom1, hal::sercom::UndocIoSet1>::default()
+                    .data_out(pins.pb23).sclk(pins.pa17).data_in(pins.pb22);  // the labeled SPI pins
+    let spi_clock1 = clocks.sercom1_core(&gclk0).unwrap();
+    let spi1 = spi::Config::new(&peripherals.MCLK, peripherals.SERCOM1, pads_spi1, spi_clock1.freq())
+                .baud(3.MHz())
+                .spi_mode(spi::MODE_0)
+                .enable();
+    let mut head_strip = ws2812_spi::Ws2812::new(spi1);
+
+
+    let pads_spi4 = spi::Pads::<hal::sercom::Sercom4, hal::sercom::IoSet2>::default()
+                    .data_out(pins.pb08).sclk(pins.pb09).data_in(pins.pb10); // a2 - tail
+    let spi_clock4 = clocks.sercom4_core(&gclk0).unwrap();
+    let spi4 = spi::Config::new(&peripherals.MCLK, peripherals.SERCOM4, pads_spi4, spi_clock4.freq())
+                 .baud(3.MHz())
+                 .spi_mode(spi::MODE_0)
+                 .enable();
+    let mut tail_strip = ws2812_spi::Ws2812::new(spi4);
 
     let mut head_colors = [PIKACHU_YELLOW ; HEAD_STRIP_NPIX];
     let mut tail_colors = [PIKACHU_YELLOW ; TAIL_STRIP_NPIX];
