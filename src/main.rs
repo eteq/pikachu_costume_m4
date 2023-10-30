@@ -42,13 +42,17 @@ const RTC_FREQ: Rate<u32, 1, 1> = Rate::<u32, 1, 1>::from_raw(32768);
 // Note: 200 mA @ 50 px @ 25/255 power of each r,g,b @ 4.13 V battery
 const TAIL_STRIP_NPIX: usize = 64; 
 const HEAD_STRIP_NPIX: usize = 55; //?
-const OVERFLOW_CHECK: bool = true; // whether or not to check for FIFO not keeping up.  Can be turned off once all timing is confirmed
-const BUILTIN_NPX_FIFO_LEVEL: bool = false; // whether or not to use the built-in neopixel to show the FIFO fullness
-const BUILTIN_NPX_STATUS: bool = true; // whether or not to use the built-in neopixel to show status of the jump/spin state
 
 const PIKACHU_YELLOW: RGB<u8> = RGB{r: 60, g:60, b:0};
 const RGB_OFF: RGB<u8> = RGB{r: 0, g:0, b:0};
 
+// testing options
+const OVERFLOW_CHECK: bool = true; // whether or not to check for FIFO not keeping up.  Can be turned off once all timing is confirmed
+const BUILTIN_NPX_FIFO_LEVEL: bool = false; // whether or not to use the built-in neopixel to show the FIFO fullness
+const BUILTIN_NPX_STATUS: bool = true; // whether or not to use the built-in neopixel to show status of the jump/spin state
+const STRIP_TEST_MODE: bool = true; // If true, the strips will be auto-triggered for testing
+
+// parameters to twiddle
 const SPIN_TIME_SECS: f32 = 3.0; // tail
 const JUMP_TIME_SECS: f32 = 4.0;  // Head
 
@@ -173,8 +177,10 @@ fn main() -> ! {
     let mut spin_end: f32 = -(SPIN_TIME_SECS as f32)-1.;
     let mut spin_finished = false;
 
-    let mut jt = false;
-    let mut st = false;
+
+    // for test node
+    let mut jt_test = false;
+    let mut st_test = false;
 
     mpu6050::mpu6050_reset_fifo(&mut i2c, MPU6050_ADDR);
     loop {
@@ -216,26 +222,27 @@ fn main() -> ! {
                 write_to_uart(&mut board_uart_tx, b"Spin detected.\r\n");
             }
 
-            // TODO: REMOVE WHEN DETECT IS DONE!
-            let rs = get_rtc_secs(&rtc);
+            if STRIP_TEST_MODE {
+                let rs = get_rtc_secs(&rtc);
 
-            if (rs as u32) % 10 == 2 {
-                if !jt {
-                    jump_end = get_rtc_secs(&rtc) + JUMP_TIME_SECS;
-                    write_to_uart(&mut board_uart_tx, b"Jump triggered.\r\n");
-                    jt = true;
+                if (rs as u32) % 10 == 2 {
+                    if !jt_test {
+                        jump_end = get_rtc_secs(&rtc) + JUMP_TIME_SECS;
+                        write_to_uart(&mut board_uart_tx, b"Jump triggered.\r\n");
+                        jt_test = true;
+                    }
+                } else {
+                    jt_test = false;
                 }
-            } else {
-                jt = false;
-            }
-            if (rs as u32) % 15 == 10 {
-                if !st {
-                    spin_end = get_rtc_secs(&rtc) + SPIN_TIME_SECS;
-                    write_to_uart(&mut board_uart_tx, b"Spin triggered.\r\n");
-                    st = true;
+                if (rs as u32) % 15 == 10 {
+                    if !st_test {
+                        spin_end = get_rtc_secs(&rtc) + SPIN_TIME_SECS;
+                        write_to_uart(&mut board_uart_tx, b"Spin triggered.\r\n");
+                        st_test = true;
+                    }
+                } else {
+                    st_test = false;
                 }
-            } else {
-                st = false;
             }
 
             
