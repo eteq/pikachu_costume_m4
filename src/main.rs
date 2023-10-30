@@ -40,7 +40,7 @@ const RTC_FREQ: Rate<u32, 1, 1> = Rate::<u32, 1, 1>::from_raw(32768);
 
 // pkachu ears N=64
 // Note: 200 mA @ 50 px @ 25/255 power of each r,g,b @ 4.13 V battery
-const TAIL_STRIP_NPIX: usize = 64; 
+const TAIL_STRIP_NPIX: usize = 64; //
 const HEAD_STRIP_NPIX: usize = 55; //?
 
 const PIKACHU_YELLOW: RGB<u8> = RGB{r: 60, g:60, b:0};
@@ -78,7 +78,8 @@ fn main() -> ! {
     let pneopixel = pins.pb03;
     let pscl = pins.pa13;
     let psda = pins.pa12;
-    let d4 = pins.pa14;  //tail strip
+    let _d4 = pins.pa14;  //tail strip
+    let a4 = pins.pa04;  //tail strip alternate
     let d5 = pins.pa16;  //head strip
     let mut delay = Delay::new(core.SYST, &mut clocks);
     
@@ -144,13 +145,13 @@ fn main() -> ! {
     neopixel.write([RGB {r:0, g:20, b:20}].into_iter()).unwrap();
 
     // set up the strips, initialize 10% power white.
-    let mut timer3 = TimerCounter::tc3_(&timer_clock23, peripherals.TC3, &mut peripherals.MCLK);
-    timer3.start(Hertz::MHz(3).into_duration());
     let mut timer4 = TimerCounter::tc4_(&timer_clock45, peripherals.TC4, &mut peripherals.MCLK);
     timer4.start(Hertz::MHz(3).into_duration());
+    let mut timer5 = TimerCounter::tc5_(&timer_clock45, peripherals.TC5, &mut peripherals.MCLK);
+    timer5.start(Hertz::MHz(3).into_duration());
 
-    let mut head_strip = Ws2812::new(timer3, d4.into_push_pull_output());
-    let mut tail_strip = Ws2812::new(timer4, d5.into_push_pull_output());
+    let mut head_strip = Ws2812::new(timer4, a4.into_push_pull_output());
+    let mut tail_strip = Ws2812::new(timer5, d5.into_push_pull_output());
 
     let mut head_colors = [PIKACHU_YELLOW ; HEAD_STRIP_NPIX];
     let mut tail_colors = [PIKACHU_YELLOW ; TAIL_STRIP_NPIX];
@@ -286,7 +287,7 @@ fn main() -> ! {
 }
 fn head_update(colors: &mut [RGB<u8>], frac: f32) {
     // start with first half on  second half off
-    if frac < 0.3333333333f32 {
+    if frac < 0.25f32 {
         for i in 0..(colors.len()/2) {
             colors[i] = PIKACHU_YELLOW;
         }
@@ -294,8 +295,8 @@ fn head_update(colors: &mut [RGB<u8>], frac: f32) {
             colors[i] = RGB_OFF;
         }   
     }
-    // 1/3 of the way though, first half off, second half on
-    else if frac < 0.666666666666666f32 {
+    // 1/4 of the way though, first half off, second half on
+    else if frac < 0.5f32 {
         for i in 0..(colors.len()/2) {
             colors[i] = RGB_OFF;
         }
@@ -304,11 +305,21 @@ fn head_update(colors: &mut [RGB<u8>], frac: f32) {
         }   
 
     }
-    // 2/3 of the way through, all on
-    else {
+    // 1/2 of the way through, all on
+    else if frac < 0.75f32 {
         for i in 0..colors.len() {
             colors[i] = PIKACHU_YELLOW;
         } 
+    // blink 3x for remainder
+    } else {
+        let stage: i32 = ((frac-0.75)*4.*6.) as i32;
+        if stage % 2 == 0 {
+            // on
+            for i in 0..colors.len() { colors[i] = PIKACHU_YELLOW;}
+        } else {
+            // off
+            for i in 0..colors.len() { colors[i] = RGB_OFF;}
+        }
     }
 
 }
