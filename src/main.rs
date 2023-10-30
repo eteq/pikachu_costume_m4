@@ -246,7 +246,7 @@ fn main() -> ! {
 
         if rtc_secs < jump_end {
             // do the jump lights
-            head_update(&mut head_colors, (jump_end-rtc_secs)/JUMP_TIME_SECS);
+            head_update(&mut head_colors, 1. - (jump_end-rtc_secs)/JUMP_TIME_SECS);
             head_strip.write(head_colors.into_iter()).unwrap();
 
             jump_finished = false;
@@ -261,7 +261,7 @@ fn main() -> ! {
         
         if rtc_secs < spin_end {
             // do the spin lights
-            tail_update(&mut tail_colors, (spin_end-rtc_secs)/SPIN_TIME_SECS);
+            tail_update(&mut tail_colors, 1. - (spin_end-rtc_secs)/SPIN_TIME_SECS);
             tail_strip.write(tail_colors.into_iter()).unwrap();
 
             spin_finished = false;
@@ -307,12 +307,18 @@ fn head_update(colors: &mut [RGB<u8>], frac: f32) {
 }
 
 fn tail_update(colors: &mut [RGB<u8>], frac: f32) {
-    // first half, yellow dot goes up the tail
+    // first half, yellow dot*3 goes up the tail
     // second half, blink 4 times
     if frac < 0.5 {
         let idx = (frac*2.*(colors.len() as f32)) as usize;
         for i in 0..colors.len() { colors[i] = RGB_OFF;}
         colors[idx] = PIKACHU_YELLOW;
+        if idx > 1 {
+            colors[idx-1] = PIKACHU_YELLOW;
+        }
+        if idx > 2 {
+            colors[idx-2] = PIKACHU_YELLOW;
+        }
     } else {
         let stage: i32 = ((frac-0.5)*2.*8.) as i32;
         if stage % 2 == 0 {
