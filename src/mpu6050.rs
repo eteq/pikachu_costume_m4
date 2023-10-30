@@ -273,6 +273,14 @@ impl MAPPData {
         normed * ACCEL_SCALE
     }
 
+    pub(crate) fn to_xy_rotdeg(&self) -> f32 {
+        let (qw, qx, qy, qz)  = self.q_to_float();
+        let numerator = 2. * (-qw*qx + qy*qz);
+        let denominator = 2. * (-qw*qy + qx*qz);
+        f32::to_degrees(f32::atan2(numerator, denominator))
+
+    }
+
     pub(crate) fn to_float(&self) -> QADataFloat {
         let (qw, qx, qy, qz)  = self.q_to_float();
         let ax = (self.accel_x as f32) / (i16::MAX as f32);

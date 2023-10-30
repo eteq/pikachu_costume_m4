@@ -50,12 +50,17 @@ const RGB_OFF: RGB<u8> = RGB{r: 0, g:0, b:0};
 const OVERFLOW_CHECK: bool = true; // whether or not to check for FIFO not keeping up.  Can be turned off once all timing is confirmed
 const BUILTIN_NPX_FIFO_LEVEL: bool = false; // whether or not to use the built-in neopixel to show the FIFO fullness
 const BUILTIN_NPX_STATUS: bool = true; // whether or not to use the built-in neopixel to show status of the jump/spin state
-const STRIP_TEST_MODE: bool = true; // If true, the strips will be auto-triggered for testing
+const STRIP_TEST_MODE: bool = false; // If true, the strips will be auto-triggered for testing
 
 // parameters to twiddle
 const SPIN_TIME_SECS: f32 = 3.0; // tail
 const JUMP_TIME_SECS: f32 = 4.0;  // Head
+const ACCEL_BUFFER_SIZE: usize = 25; // determines the accel window for jump detection - 100 Hz
+const ACCEL_STD_THRESHOLD: f32 = 0.25; // g std
+const ROT_BUFFER_SIZE: usize = 3; // determines the window for spin detection - 100 Hz
+const ROT_DIFF_THRESHOLD: f32 = 20.0; // deg per sample = 100 deg/s
 
+const ACCEL_STD_THRESHOLD_SQUARED: f32 = ACCEL_STD_THRESHOLD*ACCEL_STD_THRESHOLD;
 
 #[entry]
 fn main() -> ! {
@@ -171,7 +176,8 @@ fn main() -> ! {
     head_strip.write(head_colors.into_iter()).unwrap();
     tail_strip.write(tail_colors.into_iter()).unwrap();
 
-    let mut fifo_buffer: heapless::Deque<mpu6050::QADataFloat, 500>= heapless::Deque::new();
+    let mut zaccel_buffer: heapless::Deque<f32, ACCEL_BUFFER_SIZE>= heapless::Deque::new();
+    let mut rot_buffer: heapless::Deque<f32, ROT_BUFFER_SIZE>= heapless::Deque::new();
 
     let mut jump_end: f32 = -(JUMP_TIME_SECS as f32)-1.;
     let mut jump_finished = false;
@@ -208,17 +214,19 @@ fn main() -> ! {
                 neopixel.write([hsv2rgb(hsv)].into_iter()).unwrap();
             }
 
-            if fifo_buffer.is_full(){
-                fifo_buffer.pop_back();  //discard oldest data
-            }
-            let _ = fifo_buffer.push_front(data.to_float());
+            if zaccel_buffer.is_full(){ zaccel_buffer.pop_back(); } //discard oldest data
+            let _ = zaccel_buffer.push_front(data.to_z_accel());
 
-            if detect_jump(&fifo_buffer) {
+            if detect_jump(&zaccel_buffer) {
                 jump_end = get_rtc_secs(&rtc) + JUMP_TIME_SECS;
                 write_to_uart(&mut board_uart_tx, b"Jump detected.\r\n");
             }
 
-            if detect_spin(&fifo_buffer) {
+
+            if rot_buffer.is_full(){ rot_buffer.pop_back(); } //discard oldest data
+            let _ = rot_buffer.push_front(data.to_xy_rotdeg());
+
+            if detect_spin(&rot_buffer) {
                 spin_end = get_rtc_secs(&rtc) + SPIN_TIME_SECS;
                 write_to_uart(&mut board_uart_tx, b"Spin detected.\r\n");
             }
@@ -350,14 +358,29 @@ fn tail_update(colors: &mut [RGB<u8>], frac: f32) {
     }
 }
 
-fn detect_jump<const N: usize>(fifo_buffer: &heapless::Deque<mpu6050::QADataFloat, N>) -> bool {
-    //TODO
-    false
+fn detect_jump<const N: usize>(zaccel_buffer: &heapless::Deque<f32, N>) -> bool {
+    let mut accum: f32 = 0.0;
+    for elem in zaccel_buffer.iter() {
+        accum += elem;
+    }
+    let mean = accum / (N as f32);
+
+    accum = 0.0;
+    for elem in zaccel_buffer.iter() {
+        let em = elem - mean;
+        accum += em*em;
+    }
+    let var = accum / (N as f32);
+    var > ACCEL_STD_THRESHOLD_SQUARED
 }
 
-fn detect_spin<const N: usize>(fifo_buffer: &heapless::Deque<mpu6050::QADataFloat, N>) -> bool {
-    //TODO
-    false
+fn detect_spin<const N: usize>(rot_buffer: &heapless::Deque<f32, N>) -> bool {
+    let mut accum: f32 = 0.0;
+    for elem in rot_buffer.iter() {
+        accum += elem;
+    }
+    let mean = accum / (N as f32);
+    mean > ROT_DIFF_THRESHOLD
 }
 
 #[allow(dead_code)]
