@@ -13,6 +13,11 @@ name = "accel_dumper"
 path = "src/accel_dumper.rs"
 
 
+[[bin]]
+name = "strip_test"
+path = "src/strip_test.rs"
+
+
 # for cargo flash
 [package.metadata]
 chip = "ATSAMD51J19A"

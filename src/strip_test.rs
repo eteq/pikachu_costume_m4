@@ -18,11 +18,9 @@ use hal::pac::{CorePeripherals, Peripherals};
 use hal::prelude::*;
 use hal::time::Hertz;
 use hal::timer::*;
-use hal::sercom::{i2c, uart};
+use hal::sercom::uart;
 use hal::gpio::{Pin, PinId, PushPullOutput};
 
-//use core::fmt::Write;
-//use heapless;
 
 use smart_leds::{
     SmartLedsWrite,
@@ -30,14 +28,13 @@ use smart_leds::{
 };
 use ws2812_timer_delay::Ws2812;
 
-const MPU6050_ADDR: u8 = 0x68;
 
 // pkachu ears N=64
 // Note: 200 mA @ 50 px @ 25/255 power of each r,g,b @ 4.13 V battery
 const TAIL_STRIP_NPIX: usize = 64; 
 const HEAD_STRIP_NPIX: usize = 55; //?
 
-const PIKACHU_YELLOW: RGB<u8> = RGB{r: 60, g:60, b:0};
+const STRIP_TEST_COLOR: RGB<u8> = RGB{r: 25, g:25, b:0};
 
 #[entry]
 fn main() -> ! {
@@ -58,10 +55,8 @@ fn main() -> ! {
     let puart_rx = pins.pb17;
     let puart_tx = pins.pb16;
     let pneopixel = pins.pb03;
-    let pscl = pins.pa13;
-    let psda = pins.pa12;
     let d4 = pins.pa14;  //tail strip
-    let a4 = pins.pa04;  //backup option for tail strip
+    //let a4 = pins.pa04;  //backup option for tail strip
     let d5 = pins.pa16;  //head strip
     let mut delay = Delay::new(core.SYST, &mut clocks);
     
@@ -107,17 +102,6 @@ fn main() -> ! {
         halt(&mut delay);
     }
     
-
-    // set up MPU6050
-    // let sercom2_clock = &clocks.sercom2_core(&gclk0).unwrap();
-    // let (sda, scl) = (psda, pscl);
-    // let i2c_pads = i2c::Pads::new(sda, scl);
-    // let i2c_sercom = periph_alias!(peripherals.i2c_sercom);
-    // let mut i2c = i2c::Config::new(&peripherals.MCLK, i2c_sercom, i2c_pads, sercom2_clock.freq())
-    //     .baud(100.kHz())
-    //     .enable();
-    
-    // mpu6050::mpu6050_setup(&mut i2c, &mut delay, MPU6050_ADDR);
     
     // Neopixel turns magenta after main setup
     neopixel.write([RGB {r:0, g:20, b:20}].into_iter()).unwrap();
@@ -134,8 +118,8 @@ fn main() -> ! {
     //let mut head_strip2 = Ws2812::new(timer4, a4.into_push_pull_output());
     let mut tail_strip = Ws2812::new(timer5, d5.into_push_pull_output());
 
-    let mut head_colors = [PIKACHU_YELLOW ; HEAD_STRIP_NPIX];
-    let mut tail_colors = [PIKACHU_YELLOW ; TAIL_STRIP_NPIX];
+    let mut head_colors = [STRIP_TEST_COLOR ; HEAD_STRIP_NPIX];
+    let mut tail_colors = [STRIP_TEST_COLOR ; TAIL_STRIP_NPIX];
 
     head_strip.write(head_colors.into_iter()).unwrap();
     tail_strip.write(tail_colors.into_iter()).unwrap();
@@ -146,9 +130,9 @@ fn main() -> ! {
     let mut i = 1;
     loop {
         let j = i - 1;
-        head_colors[j % HEAD_STRIP_NPIX] = PIKACHU_YELLOW;
+        head_colors[j % HEAD_STRIP_NPIX] = STRIP_TEST_COLOR;
         head_colors[i % HEAD_STRIP_NPIX] = RGB {r:0, g:0, b:0};
-        tail_colors[j % TAIL_STRIP_NPIX] = PIKACHU_YELLOW;
+        tail_colors[j % TAIL_STRIP_NPIX] = STRIP_TEST_COLOR;
         tail_colors[i % TAIL_STRIP_NPIX] = RGB {r:0, g:0, b:0};
         head_strip.write(head_colors.into_iter()).unwrap();
         //head_strip2.write(head_colors.into_iter()).unwrap();
