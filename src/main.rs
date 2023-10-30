@@ -20,9 +20,13 @@ use hal::time::Hertz;
 use hal::timer::*;
 use hal::sercom::{i2c, uart};
 use hal::gpio::{Pin, PinId, PushPullOutput};
+use hal::rtc;
 
-//use core::fmt::Write;
-//use heapless;
+use heapless;
+#[allow(unused_imports)]
+use core::fmt::Write;
+
+use fugit::Rate;
 
 use smart_leds::{
     SmartLedsWrite,
@@ -31,13 +35,19 @@ use smart_leds::{
 use ws2812_timer_delay::Ws2812;
 
 const MPU6050_ADDR: u8 = 0x68;
+const RTC_FREQ: Rate<u32, 1, 1> = Rate::<u32, 1, 1>::from_raw(32768);
 
 // pkachu ears N=64
 // Note: 200 mA @ 50 px @ 25/255 power of each r,g,b @ 4.13 V battery
 const TAIL_STRIP_NPIX: usize = 64; 
 const HEAD_STRIP_NPIX: usize = 55; //?
+const OVERFLOW_CHECK: bool = true; // whether or not to check for FIFO not keeping up.  Can be turned off once all timing is confirmed
 
 const PIKACHU_YELLOW: RGB<u8> = RGB{r: 60, g:60, b:0};
+
+const SPIN_TIME_SECS: f32 = 3.0; // tail
+const JUMP_TIME_SECS: f32 = 4.0;  // Head
+
 
 #[entry]
 fn main() -> ! {
@@ -61,7 +71,6 @@ fn main() -> ! {
     let pscl = pins.pa13;
     let psda = pins.pa12;
     let d4 = pins.pa14;  //tail strip
-    let a4 = pins.pa04;  //backup option for tail strip
     let d5 = pins.pa16;  //head strip
     let mut delay = Delay::new(core.SYST, &mut clocks);
     
@@ -106,18 +115,22 @@ fn main() -> ! {
         write_to_uart(&mut board_uart_tx, b"\r\nHalting for panic\r\n\r\n");
         halt(&mut delay);
     }
+
+    // set up the RTC
+    peripherals.OSC32KCTRL.rtcctrl.modify(|_, w| w.rtcsel().xosc32k());
+    let rtc = rtc::Rtc::count32_mode(peripherals.RTC, RTC_FREQ, &mut peripherals.MCLK).into_count32_mode();
     
 
     // set up MPU6050
-    // let sercom2_clock = &clocks.sercom2_core(&gclk0).unwrap();
-    // let (sda, scl) = (psda, pscl);
-    // let i2c_pads = i2c::Pads::new(sda, scl);
-    // let i2c_sercom = periph_alias!(peripherals.i2c_sercom);
-    // let mut i2c = i2c::Config::new(&peripherals.MCLK, i2c_sercom, i2c_pads, sercom2_clock.freq())
-    //     .baud(100.kHz())
-    //     .enable();
+    let sercom2_clock = &clocks.sercom2_core(&gclk0).unwrap();
+    let (sda, scl) = (psda, pscl);
+    let i2c_pads = i2c::Pads::new(sda, scl);
+    let i2c_sercom = periph_alias!(peripherals.i2c_sercom);
+    let mut i2c = i2c::Config::new(&peripherals.MCLK, i2c_sercom, i2c_pads, sercom2_clock.freq())
+        .baud(100.kHz())
+        .enable();
     
-    // mpu6050::mpu6050_setup(&mut i2c, &mut delay, MPU6050_ADDR);
+    mpu6050::mpu6050_setup(&mut i2c, &mut delay, MPU6050_ADDR);
     
     // Neopixel turns magenta after main setup
     neopixel.write([RGB {r:0, g:20, b:20}].into_iter()).unwrap();
@@ -125,42 +138,126 @@ fn main() -> ! {
     // set up the strips, initialize 10% power white.
     let mut timer3 = TimerCounter::tc3_(&timer_clock23, peripherals.TC3, &mut peripherals.MCLK);
     timer3.start(Hertz::MHz(3).into_duration());
-    // let mut timer4 = TimerCounter::tc4_(&timer_clock45, peripherals.TC4, &mut peripherals.MCLK);
-    // timer4.start(Hertz::MHz(3).into_duration());
-    let mut timer5 = TimerCounter::tc5_(&timer_clock45, peripherals.TC5, &mut peripherals.MCLK);
-    timer5.start(Hertz::MHz(3).into_duration());
+    let mut timer4 = TimerCounter::tc4_(&timer_clock45, peripherals.TC4, &mut peripherals.MCLK);
+    timer4.start(Hertz::MHz(3).into_duration());
 
     let mut head_strip = Ws2812::new(timer3, d4.into_push_pull_output());
-    //let mut head_strip2 = Ws2812::new(timer4, a4.into_push_pull_output());
-    let mut tail_strip = Ws2812::new(timer5, d5.into_push_pull_output());
+    let mut tail_strip = Ws2812::new(timer4, d5.into_push_pull_output());
 
     let mut head_colors = [PIKACHU_YELLOW ; HEAD_STRIP_NPIX];
     let mut tail_colors = [PIKACHU_YELLOW ; TAIL_STRIP_NPIX];
 
     head_strip.write(head_colors.into_iter()).unwrap();
     tail_strip.write(tail_colors.into_iter()).unwrap();
+    // quick blink to show startup succeeded w/ strips on for 300 ms
+    blink_led(50, 3, &mut red_led, &mut delay);
 
     // turn off the built-in neopixel
     neopixel.write([RGB {r:0, g:0, b:0}].into_iter()).unwrap();
 
-    let mut i = 1;
+    // turn off the strips
+    for i in 0..HEAD_STRIP_NPIX {head_colors[i] = RGB {r:0, g:0, b:0}; }
+    for i in 0..TAIL_STRIP_NPIX {tail_colors[i] = RGB {r:0, g:0, b:0}; }
+    head_strip.write(head_colors.into_iter()).unwrap();
+    tail_strip.write(tail_colors.into_iter()).unwrap();
+
+    let mut fifo_buffer: heapless::Deque<mpu6050::QADataFloat, 500>= heapless::Deque::new();
+
+    let mut jump_end: f32 = -(JUMP_TIME_SECS as f32)-1.;
+    let mut jump_finished = false;
+    let mut spin_end: f32 = -(SPIN_TIME_SECS as f32)-1.;
+    let mut spin_finished = false;
+
+    mpu6050::mpu6050_reset_fifo(&mut i2c, MPU6050_ADDR);
     loop {
-        let j = i - 1;
-        head_colors[j % HEAD_STRIP_NPIX] = PIKACHU_YELLOW;
-        head_colors[i % HEAD_STRIP_NPIX] = RGB {r:0, g:0, b:0};
-        tail_colors[j % TAIL_STRIP_NPIX] = PIKACHU_YELLOW;
-        tail_colors[i % TAIL_STRIP_NPIX] = RGB {r:0, g:0, b:0};
-        head_strip.write(head_colors.into_iter()).unwrap();
-        //head_strip2.write(head_colors.into_iter()).unwrap();
-        tail_strip.write(tail_colors.into_iter()).unwrap();
+        let fifo_count = mpu6050::mpu6050_get_fifo_count(&mut i2c, MPU6050_ADDR);
+        if mpu6050::mpu6050_get_fifo_count(&mut i2c, MPU6050_ADDR) as usize >= mpu6050::DMP_PACKET_SIZE {
+            // THIS BRANCH IS FOR CHECKING FOR NEW DATA
+            let data = mpu6050::mpu6050_read_fifo(&mut i2c, MPU6050_ADDR);
 
-        i += 1;
+            if OVERFLOW_CHECK {
+                // reset and repeat if overflow occurred
+                let mut status_buffer = [0u8; 1];
+                i2c.write_read(MPU6050_ADDR, &[0x3a], &mut status_buffer).unwrap();
+                if (status_buffer[0] & 0b00010000) != 0 {
+                    write_to_uart(&mut board_uart_tx, b"FIFO overflow! Discarding and resetting.\r\n");
+                    mpu6050::mpu6050_reset_fifo(&mut i2c, MPU6050_ADDR);
+                    continue;
+                }
 
-        delay.delay_ms(50u32);
-   }
+                // set neopixel to keep track of whether or not FIFO 
+                let remaining_fifo_count = fifo_count - mpu6050::DMP_PACKET_SIZE  as u16;
+                if remaining_fifo_count == 0 {
+                    neopixel.write([RGB {r:0, g:0, b:0}].into_iter()).unwrap();
+                } else if remaining_fifo_count > 512 {
+                    neopixel.write([RGB {r:25, g:0, b:0}].into_iter()).unwrap();
+                } else {
+                    neopixel.write([RGB {r:25, g:12, b:0}].into_iter()).unwrap();
+                }
+            }
 
+            if fifo_buffer.is_full(){
+                fifo_buffer.pop_back();  //discard oldest data
+            }
+            let _ = fifo_buffer.push_front(data.to_float());
+
+            if detect_jump(&fifo_buffer) {
+                jump_end = get_rtc_secs(&rtc) + JUMP_TIME_SECS;
+            }
+
+            if detect_spin(&fifo_buffer) {
+                spin_end = get_rtc_secs(&rtc) + SPIN_TIME_SECS;
+            }
+            
+            
+        }
+
+        let rtc_secs = get_rtc_secs(&rtc);
+
+        if rtc_secs < jump_end {
+            // do the jump lights
+            head_update(&mut head_colors, (jump_end-rtc_secs)/JUMP_TIME_SECS);
+            head_strip.write(head_colors.into_iter()).unwrap();
+
+            jump_finished = false;
+        } else if !jump_finished {
+            for i in 0..HEAD_STRIP_NPIX {head_colors[i] = RGB {r:0, g:0, b:0}; }
+            head_strip.write(head_colors.into_iter()).unwrap();
+            jump_finished = true;
+        }
+        
+        if rtc_secs < spin_end {
+            // do the spin lights
+            tail_update(&mut tail_colors, (spin_end-rtc_secs)/SPIN_TIME_SECS);
+            tail_strip.write(tail_colors.into_iter()).unwrap();
+
+            spin_finished = false;
+        } else if !spin_finished {
+            for i in 0..TAIL_STRIP_NPIX {tail_colors[i] = RGB {r:0, g:0, b:0}; }
+            tail_strip.write(tail_colors.into_iter()).unwrap();
+            spin_finished = true;
+        }        
+
+    }
 }
 
+fn head_update(colors: &mut [RGB<u8>], frac: f32) {
+    //TODO
+}
+
+fn tail_update(colors: &mut [RGB<u8>], frac: f32) {
+    //TODO
+}
+
+fn detect_jump<const N: usize>(fifo_buffer: &heapless::Deque<mpu6050::QADataFloat, N>) -> bool {
+    //TODO
+    false
+}
+
+fn detect_spin<const N: usize>(fifo_buffer: &heapless::Deque<mpu6050::QADataFloat, N>) -> bool {
+    //TODO
+    false
+}
 
 #[allow(dead_code)]
 fn write_to_uart<T: uart::ValidConfig>(tx: &mut uart::Uart<T, uart::TxDuplex>, 
@@ -188,4 +285,9 @@ fn halt(delay: &mut Delay) -> ! {
     delay.delay_ms(1000u16);
     asm::wfe();
     loop { }
+}
+
+#[inline]
+fn get_rtc_secs(rtc: &rtc::Rtc<rtc::Count32Mode>) -> f32 {
+    (rtc.count32() as f32)/(RTC_FREQ.to_Hz() as f32)
 }

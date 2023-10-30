@@ -272,6 +272,31 @@ impl MAPPData {
         let normed = qw*(-ax*qy + ay*qx + az*qw) + qx*(ax*qz + ay*qw - az*qx) - qy*(ax*qw - ay*qz + az*qy) + qz*(ax*qx + ay*qy + az*qz);
         normed * ACCEL_SCALE
     }
+
+    pub(crate) fn to_float(&self) -> QADataFloat {
+        let (qw, qx, qy, qz)  = self.q_to_float();
+        let ax = (self.accel_x as f32) / (i16::MAX as f32);
+        let ay = (self.accel_y as f32) / (i16::MAX as f32);
+        let az = (self.accel_z as f32) / (i16::MAX as f32);
+        QADataFloat {
+            qw: qw,
+            qx: qx,
+            qy: qy,
+            qz: qz,
+            accel_x: ax,
+            accel_y: ay,
+            accel_z: az,
+        }
+    }
+}
+pub(crate) struct QADataFloat {
+    pub qw: f32,
+    pub qx: f32,
+    pub qy: f32,
+    pub qz: f32,
+    pub accel_x: f32,
+    pub accel_y: f32,
+    pub accel_z: f32,
 }
 
 pub(crate) const MPU6050_DATA_SIZE: usize = core::mem::size_of::<MAPPData>();
