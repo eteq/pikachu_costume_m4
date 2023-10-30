@@ -31,6 +31,7 @@ use fugit::Rate;
 use smart_leds::{
     SmartLedsWrite,
     RGB,
+    hsv::{hsv2rgb, Hsv},
 };
 use ws2812_timer_delay::Ws2812;
 
@@ -42,8 +43,11 @@ const RTC_FREQ: Rate<u32, 1, 1> = Rate::<u32, 1, 1>::from_raw(32768);
 const TAIL_STRIP_NPIX: usize = 64; 
 const HEAD_STRIP_NPIX: usize = 55; //?
 const OVERFLOW_CHECK: bool = true; // whether or not to check for FIFO not keeping up.  Can be turned off once all timing is confirmed
+const BUILTIN_NPX_FIFO_LEVEL: bool = false; // whether or not to use the built-in neopixel to show the FIFO fullness
+const BUILTIN_NPX_STATUS: bool = true; // whether or not to use the built-in neopixel to show status of the jump/spin state
 
 const PIKACHU_YELLOW: RGB<u8> = RGB{r: 60, g:60, b:0};
+const RGB_OFF: RGB<u8> = RGB{r: 0, g:0, b:0};
 
 const SPIN_TIME_SECS: f32 = 3.0; // tail
 const JUMP_TIME_SECS: f32 = 4.0;  // Head
@@ -153,11 +157,12 @@ fn main() -> ! {
     blink_led(50, 3, &mut red_led, &mut delay);
 
     // turn off the built-in neopixel
-    neopixel.write([RGB {r:0, g:0, b:0}].into_iter()).unwrap();
+    let mut bi_npx_color = RGB_OFF;
+    neopixel.write([bi_npx_color].into_iter()).unwrap();
 
     // turn off the strips
-    for i in 0..HEAD_STRIP_NPIX {head_colors[i] = RGB {r:0, g:0, b:0}; }
-    for i in 0..TAIL_STRIP_NPIX {tail_colors[i] = RGB {r:0, g:0, b:0}; }
+    for i in 0..HEAD_STRIP_NPIX {head_colors[i] = RGB_OFF; }
+    for i in 0..TAIL_STRIP_NPIX {tail_colors[i] = RGB_OFF; }
     head_strip.write(head_colors.into_iter()).unwrap();
     tail_strip.write(tail_colors.into_iter()).unwrap();
 
@@ -167,6 +172,9 @@ fn main() -> ! {
     let mut jump_finished = false;
     let mut spin_end: f32 = -(SPIN_TIME_SECS as f32)-1.;
     let mut spin_finished = false;
+
+    let mut jt = false;
+    let mut st = false;
 
     mpu6050::mpu6050_reset_fifo(&mut i2c, MPU6050_ADDR);
     loop {
@@ -184,16 +192,13 @@ fn main() -> ! {
                     mpu6050::mpu6050_reset_fifo(&mut i2c, MPU6050_ADDR);
                     continue;
                 }
+            }
 
+            if BUILTIN_NPX_FIFO_LEVEL {
                 // set neopixel to keep track of whether or not FIFO 
-                let remaining_fifo_count = fifo_count - mpu6050::DMP_PACKET_SIZE  as u16;
-                if remaining_fifo_count == 0 {
-                    neopixel.write([RGB {r:0, g:0, b:0}].into_iter()).unwrap();
-                } else if remaining_fifo_count > 512 {
-                    neopixel.write([RGB {r:25, g:0, b:0}].into_iter()).unwrap();
-                } else {
-                    neopixel.write([RGB {r:25, g:12, b:0}].into_iter()).unwrap();
-                }
+                let hsv = Hsv{hue: (((fifo_count as f32 / 1024.) * 170. + 85.) % 255.) as u8, 
+                                    sat: 255, val: 60};
+                neopixel.write([hsv2rgb(hsv)].into_iter()).unwrap();
             }
 
             if fifo_buffer.is_full(){
@@ -203,11 +208,36 @@ fn main() -> ! {
 
             if detect_jump(&fifo_buffer) {
                 jump_end = get_rtc_secs(&rtc) + JUMP_TIME_SECS;
+                write_to_uart(&mut board_uart_tx, b"Jump detected.\r\n");
             }
 
             if detect_spin(&fifo_buffer) {
                 spin_end = get_rtc_secs(&rtc) + SPIN_TIME_SECS;
+                write_to_uart(&mut board_uart_tx, b"Spin detected.\r\n");
             }
+
+            // TODO: REMOVE WHEN DETECT IS DONE!
+            let rs = get_rtc_secs(&rtc);
+
+            if (rs as u32) % 10 == 2 {
+                if !jt {
+                    jump_end = get_rtc_secs(&rtc) + JUMP_TIME_SECS;
+                    write_to_uart(&mut board_uart_tx, b"Jump triggered.\r\n");
+                    jt = true;
+                }
+            } else {
+                jt = false;
+            }
+            if (rs as u32) % 15 == 10 {
+                if !st {
+                    spin_end = get_rtc_secs(&rtc) + SPIN_TIME_SECS;
+                    write_to_uart(&mut board_uart_tx, b"Spin triggered.\r\n");
+                    st = true;
+                }
+            } else {
+                st = false;
+            }
+
             
             
         }
@@ -220,10 +250,13 @@ fn main() -> ! {
             head_strip.write(head_colors.into_iter()).unwrap();
 
             jump_finished = false;
+            if BUILTIN_NPX_STATUS { bi_npx_color.b = 25; }
         } else if !jump_finished {
-            for i in 0..HEAD_STRIP_NPIX {head_colors[i] = RGB {r:0, g:0, b:0}; }
+            for i in 0..HEAD_STRIP_NPIX {head_colors[i] = RGB_OFF; }
             head_strip.write(head_colors.into_iter()).unwrap();
+
             jump_finished = true;
+            if BUILTIN_NPX_STATUS { bi_npx_color.b = 0; }
         }
         
         if rtc_secs < spin_end {
@@ -232,21 +265,65 @@ fn main() -> ! {
             tail_strip.write(tail_colors.into_iter()).unwrap();
 
             spin_finished = false;
+            if BUILTIN_NPX_STATUS { bi_npx_color.g = 25; }
         } else if !spin_finished {
-            for i in 0..TAIL_STRIP_NPIX {tail_colors[i] = RGB {r:0, g:0, b:0}; }
+            for i in 0..TAIL_STRIP_NPIX {tail_colors[i] = RGB_OFF; }
             tail_strip.write(tail_colors.into_iter()).unwrap();
+
             spin_finished = true;
+            if BUILTIN_NPX_STATUS { bi_npx_color.g = 0; }
         }        
 
+        if BUILTIN_NPX_STATUS { neopixel.write([bi_npx_color].into_iter()).unwrap(); }
     }
 }
-
 fn head_update(colors: &mut [RGB<u8>], frac: f32) {
-    //TODO
+    // start with first half on  second half off
+    if frac < 0.3333333333f32 {
+        for i in 0..(colors.len()/2) {
+            colors[i] = PIKACHU_YELLOW;
+        }
+        for i in (colors.len()/2)..colors.len() {
+            colors[i] = RGB_OFF;
+        }   
+    }
+    // 1/3 of the way though, first half off, second half on
+    else if frac < 0.666666666666666f32 {
+        for i in 0..(colors.len()/2) {
+            colors[i] = RGB_OFF;
+        }
+        for i in (colors.len()/2)..colors.len() {
+            colors[i] = PIKACHU_YELLOW;
+        }   
+
+    }
+    // 2/3 of the way through, all on
+    else {
+        for i in 0..colors.len() {
+            colors[i] = PIKACHU_YELLOW;
+        } 
+    }
+
 }
 
 fn tail_update(colors: &mut [RGB<u8>], frac: f32) {
-    //TODO
+    // first half, yellow dot goes up the tail
+    // second half, blink 4 times
+    if frac < 0.5 {
+        let idx = (frac*2.*(colors.len() as f32)) as usize;
+        for i in 0..colors.len() { colors[i] = RGB_OFF;}
+        colors[idx] = PIKACHU_YELLOW;
+    } else {
+        let stage: i32 = ((frac-0.5)*2.*8.) as i32;
+        if stage % 2 == 0 {
+            // on
+            for i in 0..colors.len() { colors[i] = PIKACHU_YELLOW;}
+        } else {
+            // off
+            for i in 0..colors.len() { colors[i] = RGB_OFF;}
+        }
+
+    }
 }
 
 fn detect_jump<const N: usize>(fifo_buffer: &heapless::Deque<mpu6050::QADataFloat, N>) -> bool {
