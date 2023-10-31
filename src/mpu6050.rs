@@ -233,6 +233,13 @@ impl MAPPData {
         (wf, xf, yf, zf)
     }
 
+    pub(crate) fn accel_to_float(&self) -> (f32, f32, f32) {
+        let xf = (self.accel_x as f32) / (i16::MAX as f32);
+        let yf = (self.accel_y as f32) / (i16::MAX as f32);
+        let zf = (self.accel_z as f32) / (i16::MAX as f32);
+        (xf, yf, zf)
+    }
+
     // Where the quaternion maps the x-axis to
     pub(crate) fn to_alignment_vector_x(&self) -> (f32, f32, f32){
         let (qw, qx, qy, qz)  = self.q_to_float();
@@ -266,9 +273,7 @@ impl MAPPData {
     // sign might be wrong in the quaternion application!
     pub(crate) fn to_z_accel(&self) -> f32{
         let (qw, qx, qy, qz)  = self.q_to_float();
-        let ax = (self.accel_x as f32) / (i16::MAX as f32);
-        let ay = (self.accel_y as f32) / (i16::MAX as f32);
-        let az = (self.accel_z as f32) / (i16::MAX as f32);
+        let (ax, ay, az) = self.accel_to_float();
         let normed = qw*(-ax*qy + ay*qx + az*qw) + qx*(ax*qz + ay*qw - az*qx) - qy*(ax*qw - ay*qz + az*qy) + qz*(ax*qx + ay*qy + az*qz);
         normed * ACCEL_SCALE
     }
